@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\TrainingProgram;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class TrainingProgramController extends Controller
@@ -24,7 +25,13 @@ class TrainingProgramController extends Controller
             'slots' => ['required', 'integer', 'min:0'],
             'tesda_accredited' => ['boolean'],
             'status' => ['required', Rule::in(['active', 'inactive'])],
+            'image' => ['nullable', 'image', 'max:2048'],
         ]);
+
+        if ($request->hasFile('image')) {
+            $validated['image_path'] = $request->file('image')->store('training_programs', 'public');
+        }
+        unset($validated['image']);
 
         $validated['created_by'] = $request->user()?->id;
 
@@ -48,7 +55,16 @@ class TrainingProgramController extends Controller
             'slots' => ['required', 'integer', 'min:0'],
             'tesda_accredited' => ['boolean'],
             'status' => ['required', Rule::in(['active', 'inactive'])],
+            'image' => ['nullable', 'image', 'max:2048'],
         ]);
+
+        if ($request->hasFile('image')) {
+            if ($trainingProgram->image_path) {
+                Storage::disk('public')->delete($trainingProgram->image_path);
+            }
+            $validated['image_path'] = $request->file('image')->store('training_programs', 'public');
+        }
+        unset($validated['image']);
 
         $trainingProgram->update($validated);
 
@@ -57,6 +73,10 @@ class TrainingProgramController extends Controller
 
     public function destroy(TrainingProgram $trainingProgram)
     {
+        if ($trainingProgram->image_path) {
+            Storage::disk('public')->delete($trainingProgram->image_path);
+        }
+
         $trainingProgram->delete();
 
         return response()->json(['message' => 'Program removed.']);
