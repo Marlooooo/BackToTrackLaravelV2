@@ -20,6 +20,7 @@ return new class extends Migration
                 'Accepted by TESDA',
                 'Training Started',
                 'Completed',
+                'Rejected',
             ]);
 
             $table->text('remarks')->nullable();

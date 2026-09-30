@@ -47,16 +47,20 @@ class AuthController extends Controller
 
         $request->session()->regenerate();
         $user = Auth::user();
+        $token = $user->createToken('auth')->plainTextToken;
 
         return response()->json([
             'success' => true,
             'role' => $user->role,
             'name' => $user->name,
+            'token' => $token,
         ]);
     }
 
     public function logout(Request $request)
     {
+        $request->user()?->tokens()->delete();
+
         Auth::guard('web')->logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();
