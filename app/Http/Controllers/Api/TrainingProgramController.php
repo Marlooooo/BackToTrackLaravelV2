@@ -7,6 +7,9 @@ use App\Models\TrainingProgram;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use App\Models\User;
+use App\Notifications\NewTrainingProgram;
+use Illuminate\Support\Facades\Notification;
 
 class TrainingProgramController extends Controller
 {
@@ -36,6 +39,9 @@ class TrainingProgramController extends Controller
         $validated['created_by'] = $request->user()?->id;
 
         $program = TrainingProgram::create($validated);
+
+        $osyUsers = User::where('role', 'osy')->get();
+        Notification::send($osyUsers, new NewTrainingProgram($program));
 
         return response()->json($program, 201);
     }
