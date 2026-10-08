@@ -42,7 +42,6 @@
          'would', 'their', 'about', 'been', 'not', 'but', 'you', 'get', 'learn',
       ];
 
-      // Your training_programs table uses 'active' for courses that can be taken.
       private const AVAILABLE_STATUS = 'active';
 
       private ?array $synonymMap = null;

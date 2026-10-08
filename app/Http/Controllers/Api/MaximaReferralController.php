@@ -12,8 +12,8 @@
     {
     // current status => statuses Maxima may move it to
     private const TRANSITIONS = [
-        'Referred'          => ['Accepted by TESDA', 'Rejected'],
-        'Accepted by TESDA' => ['Training Started'],
+        'Referred'          => ['Accepted by Maxima', 'Rejected'],
+        'Accepted by Maxima' => ['Training Started'],
         'Training Started'  => ['Completed'],
     ];
 
@@ -106,4 +106,68 @@
             $referral->fresh()->load('osyProfile', 'trainingProgram', 'referrer:id,name', 'reviewer:id,name')
         );
     }
+
+        /**
+     * GET /api/maxima/enrollees?search=&status=
+     */
+    public function enrollees(Request $request)
+    {
+        $this->authorizeMaxima($request);
+
+        $enrolledStatuses = ['Accepted by Maxima', 'Training Started', 'Completed'];
+
+        $referrals = Referral::with([
+                'osyProfile',
+                'trainingProgram',
+                'referrer:id,name',
+                'reviewer:id,name',
+            ])
+            ->whereIn('status', $enrolledStatuses)
+            ->when($request->status, function ($q, $status) use ($enrolledStatuses) {
+                if (in_array($status, $enrolledStatuses, true)) {
+                    $q->where('status', $status);
+                }
+            })
+            ->when($request->search, function ($q, $search) {
+                $q->whereHas('osyProfile', function ($p) use ($search) {
+                    $p->where('first_name', 'like', "%{$search}%")
+                        ->orWhere('middle_name', 'like', "%{$search}%")
+                        ->orWhere('last_name', 'like', "%{$search}%");
+                });
+            })
+            ->latest()
+            ->get();
+
+        $logs = ReferralStatusLog::whereIn('referral_id', $referrals->pluck('id'))
+            ->orderBy('created_at')
+            ->get();
+
+        $userNames = \App\Models\User::whereIn('id', $logs->pluck('changed_by')->filter()->unique())
+            ->pluck('name', 'id');
+
+        $logsByReferral = $logs->groupBy('referral_id');
+
+        $referrals->each(function ($referral) use ($logsByReferral, $userNames) {
+            $history = ($logsByReferral[$referral->id] ?? collect())->map(fn ($log) => [
+                'status'     => $log->status,
+                'remarks'    => $log->remarks,
+                'changed_by' => $userNames[$log->changed_by] ?? null,
+                'created_at' => $log->created_at,
+            ])->values();
+
+            $accepted = $history->firstWhere('status', 'Accepted by Maxima');
+
+            $referral->history = $history;
+            $referral->accepted_at = $accepted['created_at'] ?? $referral->updated_at;
+        });
+
+        return response()->json([
+            'counts' => [
+                'accepted' => $referrals->where('status', 'Accepted by Maxima')->count(),
+                'ongoing'  => $referrals->where('status', 'Training Started')->count(),
+                'completed' => $referrals->where('status', 'Completed')->count(),
+            ],
+            'enrollees' => $referrals->values(),
+        ]);
     }
+}

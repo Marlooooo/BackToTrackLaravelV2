@@ -108,7 +108,7 @@
                   'background_circumstances' => 'Helps organize barangay activities.',
                   'personal_observations' => 'Outgoing and organized.',
                   'expressed_goals' => 'Wants to plan community events.',
-                  'current_status' => 'Accepted by TESDA',
+                  'current_status' => 'Accepted by Maxima',
                ],
                [
                   'email' => 'carlo.mendoza@osy.test',
@@ -213,7 +213,7 @@
                   'background_circumstances' => 'Cuts hair for neighbors for small pay.',
                   'personal_observations' => 'Has a good eye for styles.',
                   'expressed_goals' => 'Wants to open a small barbershop.',
-                  'current_status' => 'Accepted by TESDA',
+                  'current_status' => 'Accepted by Maxima',
                ],
                [
                   'email' => 'rowena.pascual@osy.test',

@@ -9,6 +9,9 @@
    use App\Models\TrainingProgram;
    use Illuminate\Http\Request;
    use Illuminate\Support\Facades\DB;
+   use App\Models\User;
+   use App\Notifications\NewReferral;
+   use Illuminate\Support\Facades\Notification;
 
    class ReferralController extends Controller
    {
@@ -132,6 +135,16 @@
 
                return $referral;
          });
+         
+         // Sent after the transaction commits, so Maxima is only notified of referrals that really exist.
+         try {
+               $maximaUsers = User::where('role', 'maxima_tesda_school')->get();
+               Notification::send($maximaUsers, new NewReferral($referral));
+         } catch (\Throwable $e) {
+               // A notification failure should not fail a referral that is already saved.
+               report($e);
+         }
+         
 
          return response()->json($referral->load('osyProfile', 'trainingProgram'), 201);
       }

@@ -18,12 +18,11 @@ class OsyProfileController extends Controller
         'Registered',
         'Validated',
         'Referred',
-        'Accepted by TESDA',
+        'Accepted by Maxima',
         'Training Started',
         'Completed',
     ];
 
-    // Change this to whatever value your app uses for OSY users
     private const OSY_ROLE = 'osy';
 
     public function index(Request $request)

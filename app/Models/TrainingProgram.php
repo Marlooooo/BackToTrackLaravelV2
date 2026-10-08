@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TrainingProgram extends Model
 {
@@ -38,5 +39,9 @@ class TrainingProgram extends Model
     public function getImageUrlAttribute(): ?string
     {
         return $this->image_path ? Storage::disk('public')->url($this->image_path) : null;
+    }
+    public function referrals(): HasMany
+    {
+        return $this->hasMany(Referral::class);
     }
 }

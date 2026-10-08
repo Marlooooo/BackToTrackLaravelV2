@@ -34,7 +34,7 @@ return new class extends Migration
                 'Registered',
                 'Validated',
                 'Referred',
-                'Accepted by TESDA',
+                'Accepted by Maxima',
                 'Training Started',
                 'Completed',
             ])->default('Registered');
