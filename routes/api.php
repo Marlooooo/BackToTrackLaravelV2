@@ -10,6 +10,11 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\MaximaDashboardController;
 use App\Http\Controllers\Api\AnnouncementController;
+use App\Http\Controllers\Api\MaximaProgressController;
+
+
+
+
 
 
 
@@ -38,6 +43,28 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::patch('/maxima/referrals/{referral}/status', [MaximaReferralController::class, 'updateStatus']);
    Route::get('/maxima/enrollees', [MaximaReferralController::class, 'enrollees']);
    Route::get('/maxima/dashboard', [MaximaDashboardController::class, 'index']);
+   Route::get('/maxima/progress', [MaximaProgressController::class, 'index']);
+   Route::get('/maxima/progress/{referral}', [MaximaProgressController::class, 'show']);
+   Route::post('/maxima/progress/{referral}', [MaximaProgressController::class, 'store']);
+   Route::put('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'update']);
+   Route::delete('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'destroy']);
+   Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
+      Route::get('/maxima/progress', [MaximaProgressController::class, 'index']);
+   Route::get('/maxima/progress/{referral}', [MaximaProgressController::class, 'show']);
+   Route::put('/maxima/progress/{referral}/details', [MaximaProgressController::class, 'updateDetails']);
+   Route::post('/maxima/progress/{referral}/start', [MaximaProgressController::class, 'start']);
+   Route::post('/maxima/progress/{referral}/complete', [MaximaProgressController::class, 'complete']);
+   Route::post('/maxima/progress/{referral}/drop', [MaximaProgressController::class, 'drop']);
+   Route::put('/maxima/progress/{referral}/outcome', [MaximaProgressController::class, 'updateOutcome']);
+   Route::post('/maxima/progress/{referral}/attendance', [MaximaProgressController::class, 'saveAttendance']);
+   Route::post('/maxima/progress/{referral}/notes', [MaximaProgressController::class, 'storeNote']);
+   Route::post('/maxima/progress/{referral}/documents', [MaximaProgressController::class, 'storeDocument']);
+   Route::delete('/maxima/progress/attendance/{record}', [MaximaProgressController::class, 'destroyAttendance']);
+   Route::delete('/maxima/progress/notes/{note}', [MaximaProgressController::class, 'destroyNote']);
+   Route::put('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'updateDocument']);
+   Route::delete('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'destroyDocument']);
+   Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
+   
 
    
    Route::get('/notifications', [NotificationController::class, 'index']);

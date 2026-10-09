@@ -56,4 +56,15 @@
       {
          return $this->hasMany(ReferralStatusLog::class);
       }
+            public function progressReports(): HasMany
+      {
+         return $this->hasMany(TrainingProgress::class)
+            ->orderByDesc('report_period_end')
+            ->orderByDesc('id');
+      }
+
+      public function absenceConcerns(): HasMany
+      {
+         return $this->hasMany(AbsenceConcern::class)->latest();
+      }
    }
