@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
 
 class OsyProfile extends Model
 {
@@ -43,5 +45,9 @@ class OsyProfile extends Model
     public function registeredBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'registered_by');
+    }
+    public function recommendations(): HasMany
+    {
+        return $this->hasMany(TrainingRecommendation::class)->orderBy('rank');
     }
 }

@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\MaximaDashboardController;
 use App\Http\Controllers\Api\AnnouncementController;
 use App\Http\Controllers\Api\MaximaProgressController;
+use App\Http\Controllers\Api\OsyProgressController;
 
 
 
@@ -28,6 +29,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
    Route::post('osy-recommendations/preview', [OsyProfileController::class, 'previewRecommendations']);
    Route::get('osy-profiles/{osyProfile}/recommendations', [OsyProfileController::class, 'recommendations']);
+   Route::get('/osy/progress', [OsyProgressController::class, 'index']);
 
    Route::apiResource('training-programs', TrainingProgramController::class);
    Route::apiResource('osy-profiles', OsyProfileController::class);
