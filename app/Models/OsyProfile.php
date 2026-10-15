@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Support\Facades\Storage;
 
 
 class OsyProfile extends Model
@@ -30,6 +32,7 @@ class OsyProfile extends Model
         'personal_observations',
         'expressed_goals',
         'current_status',
+        'profile_photo'
     ];
 
     protected $casts = [
@@ -49,5 +52,15 @@ class OsyProfile extends Model
     public function recommendations(): HasMany
     {
         return $this->hasMany(TrainingRecommendation::class)->orderBy('rank');
+    }
+    protected $appends = ['profile_photo_url'];
+
+    protected function profilePhotoUrl(): Attribute
+    {
+        return Attribute::get(
+            fn () => $this->profile_photo
+                ? Storage::disk('public')->url($this->profile_photo)
+                : null
+        );
     }
 }

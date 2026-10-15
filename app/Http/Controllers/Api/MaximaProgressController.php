@@ -345,8 +345,6 @@
       {
             return [
                   'training_end_date'    => 'nullable|date',
-                  'certificate_number'   => 'nullable|string|max:100',
-                  'certificate_date'     => 'nullable|date',
                   'after_training_status' => 'nullable|in:employed,self_employed,further_training,looking_for_work,other',
                   'after_training_note'  => 'nullable|string|max:255',
                   'outcome_remarks'      => 'nullable|string|max:1000',

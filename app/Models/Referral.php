@@ -56,11 +56,20 @@
       {
          return $this->hasMany(ReferralStatusLog::class);
       }
-            public function progressReports(): HasMany
+
+      public function attendanceRecords(): HasMany
       {
-         return $this->hasMany(TrainingProgress::class)
-            ->orderByDesc('report_period_end')
-            ->orderByDesc('id');
+         return $this->hasMany(AttendanceRecord::class);
+      }
+
+      public function referralNotes(): HasMany
+      {
+         return $this->hasMany(ReferralNote::class);
+      }
+
+      public function referralDocuments(): HasMany
+      {
+         return $this->hasMany(ReferralDocument::class);
       }
 
       public function absenceConcerns(): HasMany

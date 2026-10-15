@@ -13,12 +13,6 @@ use App\Http\Controllers\Api\AnnouncementController;
 use App\Http\Controllers\Api\MaximaProgressController;
 use App\Http\Controllers\Api\OsyProgressController;
 
-
-
-
-
-
-
 Route::post('/contact', [ContactController::class, 'send'])->middleware('throttle:2,120');
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/register', [AuthController::class, 'register']);
@@ -27,9 +21,17 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::post('/logout', [AuthController::class, 'logout']);
    Route::get('/user', [AuthController::class, 'user']);
 
+   // SK side: recommendations
    Route::post('osy-recommendations/preview', [OsyProfileController::class, 'previewRecommendations']);
    Route::get('osy-profiles/{osyProfile}/recommendations', [OsyProfileController::class, 'recommendations']);
+
+   // OSY side: the logged-in OSY's own data
    Route::get('/osy/progress', [OsyProgressController::class, 'index']);
+   Route::get('/osy/recommendations', [OsyProfileController::class, 'myRecommendations']);
+   Route::get('/osy/profile', [OsyProfileController::class, 'myProfile']);
+   Route::put('/osy/profile', [OsyProfileController::class, 'updateMyProfile']);
+   Route::put('/osy/password', [AuthController::class, 'updatePassword']);
+   Route::post('/osy/profile/photo', [OsyProfileController::class, 'updateMyPhoto']);
 
    Route::apiResource('training-programs', TrainingProgramController::class);
    Route::apiResource('osy-profiles', OsyProfileController::class);
@@ -40,19 +42,16 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::post('/referrals', [ReferralController::class, 'store']);
    Route::delete('/referrals/{referral}', [ReferralController::class, 'destroy']);
 
-
    Route::get('/maxima/referrals', [MaximaReferralController::class, 'index']);
    Route::patch('/maxima/referrals/{referral}/status', [MaximaReferralController::class, 'updateStatus']);
    Route::get('/maxima/enrollees', [MaximaReferralController::class, 'enrollees']);
    Route::get('/maxima/dashboard', [MaximaDashboardController::class, 'index']);
+
    Route::get('/maxima/progress', [MaximaProgressController::class, 'index']);
    Route::get('/maxima/progress/{referral}', [MaximaProgressController::class, 'show']);
    Route::post('/maxima/progress/{referral}', [MaximaProgressController::class, 'store']);
    Route::put('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'update']);
    Route::delete('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'destroy']);
-   Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
-      Route::get('/maxima/progress', [MaximaProgressController::class, 'index']);
-   Route::get('/maxima/progress/{referral}', [MaximaProgressController::class, 'show']);
    Route::put('/maxima/progress/{referral}/details', [MaximaProgressController::class, 'updateDetails']);
    Route::post('/maxima/progress/{referral}/start', [MaximaProgressController::class, 'start']);
    Route::post('/maxima/progress/{referral}/complete', [MaximaProgressController::class, 'complete']);
@@ -66,9 +65,7 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::put('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'updateDocument']);
    Route::delete('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'destroyDocument']);
    Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
-   
 
-   
    Route::get('/notifications', [NotificationController::class, 'index']);
    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
    Route::post('/notifications/read-all', [NotificationController::class, 'markAllAsRead']);

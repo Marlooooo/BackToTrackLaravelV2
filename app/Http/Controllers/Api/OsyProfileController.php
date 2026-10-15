@@ -7,10 +7,13 @@ use App\Models\OsyProfile;
 use App\Models\User;
 use App\Services\CourseRecommender;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 
 class OsyProfileController extends Controller
 {
@@ -64,18 +67,30 @@ class OsyProfileController extends Controller
         );
 
         $account = $validated['account'] ?? null;
-        unset($validated['account']);
+        unset($validated['account'], $validated['profile_photo']);
 
         $validated['registered_by'] = $request->user()?->id;
 
-        // Profile and user are saved together: if one fails, neither is kept.
-        $osyProfile = DB::transaction(function () use ($validated, $account) {
-            if ($account) {
-                $validated['user_id'] = $this->createUser($validated, $account)->id;
-            }
+        $photoPath = $request->hasFile('profile_photo')
+            ? $this->storePhoto($request->file('profile_photo'))
+            : null;
 
-            return OsyProfile::create($validated);
-        });
+        if ($photoPath) {
+            $validated['profile_photo'] = $photoPath;
+        }
+
+        try {
+            $osyProfile = DB::transaction(function () use ($validated, $account) {
+                if ($account) {
+                    $validated['user_id'] = $this->createUser($validated, $account)->id;
+                }
+
+                return OsyProfile::create($validated);
+            });
+        } catch (\Throwable $e) {
+            $this->deletePhoto($photoPath); // don't leave an orphan file
+            throw $e;
+        }
 
         $this->refreshRecommendations($osyProfile, $recommender);
 
@@ -97,19 +112,39 @@ class OsyProfileController extends Controller
         );
 
         $account = $validated['account'] ?? null;
-        unset($validated['account']);
+        unset($validated['account'], $validated['profile_photo']);
 
-        DB::transaction(function () use ($validated, $account, $osyProfile) {
-            // Only create an account if this OSY doesn't already have one
-            if ($account && !$osyProfile->user_id) {
-                $validated['user_id'] = $this->createUser($validated, $account)->id;
-            }
+        $oldPhoto = $osyProfile->profile_photo;
+        $newPhoto = null;
+        $photoChanged = false;
 
-            $osyProfile->update($validated);
-        });
+        if ($request->hasFile('profile_photo')) {
+            $newPhoto = $this->storePhoto($request->file('profile_photo'));
+            $validated['profile_photo'] = $newPhoto;
+            $photoChanged = true;
+        } elseif ($request->boolean('remove_profile_photo')) {
+            $validated['profile_photo'] = null;
+            $photoChanged = true;
+        }
 
-        // Regenerate only when the interview fields changed, or when this OSY
-        // has no saved recommendations yet (covers OSYs registered before this feature).
+        try {
+            DB::transaction(function () use ($validated, $account, $osyProfile) {
+                if ($account && !$osyProfile->user_id) {
+                    $validated['user_id'] = $this->createUser($validated, $account)->id;
+                }
+
+                $osyProfile->update($validated);
+            });
+        } catch (\Throwable $e) {
+            $this->deletePhoto($newPhoto);
+            throw $e;
+        }
+
+        // Only delete the old file after the DB update succeeded
+        if ($photoChanged) {
+            $this->deletePhoto($oldPhoto);
+        }
+
         if ($osyProfile->wasChanged(self::RECOMMENDATION_FIELDS)
             || !$osyProfile->recommendations()->exists()) {
             $this->refreshRecommendations($osyProfile, $recommender);
@@ -120,7 +155,11 @@ class OsyProfileController extends Controller
 
     public function destroy(OsyProfile $osyProfile)
     {
-        DB::transaction(function () use ($osyProfile) {
+
+            $photo = $osyProfile->profile_photo;
+
+            DB::transaction(function () use ($osyProfile) {
+
             $user = $osyProfile->user;
 
             $osyProfile->delete();
@@ -132,6 +171,7 @@ class OsyProfileController extends Controller
                 $user->delete();
             }
         });
+        $this->deletePhoto($photo);
 
         return response()->json(['message' => 'OSY record removed.']);
     }
@@ -237,6 +277,7 @@ class OsyProfileController extends Controller
             'personal_observations' => ['nullable', 'string', 'max:1000'],
             'expressed_goals' => ['nullable', 'string', 'max:1000'],
             'current_status' => ['required', Rule::in(self::STATUSES)],
+            'profile_photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
         ];
     }
 
@@ -255,6 +296,10 @@ class OsyProfileController extends Controller
             'educational_attainment.in' => 'Select a valid educational attainment.',
             'account.email.unique' => 'This email is already used by another account.',
             'account.password.confirmed' => 'Passwords do not match.',
+            'profile_photo.image' => 'The profile photo must be an image.',
+            'profile_photo.mimes' => 'The profile photo must be a JPG, PNG or WEBP file.',
+            'profile_photo.max' => 'The profile photo must not be larger than 2 MB.',
+            'profile_photo.uploaded' => 'The profile photo failed to upload. Try a smaller file.',
         ];
     }
 
@@ -301,6 +346,103 @@ class OsyProfileController extends Controller
         ]);
     }
 
+    /* ------------------------------------------------------------------ */
+    /* OSY side: the logged-in OSY's own data                             */
+    /* ------------------------------------------------------------------ */
+
+    // Only these fields are ever sent to the OSY. The SK's private interview
+    // notes (personal_observations, background_circumstances) are left out.
+    private const OWN_PROFILE_FIELDS = [
+        'first_name', 'middle_name', 'last_name', 'birthdate', 'sex',
+        'address', 'contact_number', 'educational_attainment',
+        'preferred_career', 'expressed_goals', 'available_schedule',
+        'has_transportation', 'current_status', 'created_at', 'profile_photo_url',
+    ];
+
+    /** The profile linked to the logged-in user. Never looked up from the URL. */
+    private function ownProfile(Request $request): ?OsyProfile
+    {
+        return OsyProfile::where('user_id', $request->user()->id)->first();
+    }
+
+    private function ownProfilePayload(OsyProfile $osy): array
+    {
+        $osy->loadMissing('user:id,email');
+
+        return Arr::only($osy->toArray(), self::OWN_PROFILE_FIELDS)
+            + ['email' => $osy->user?->email];
+    }
+
+    // GET: the logged-in OSY's saved course recommendations
+    public function myRecommendations(Request $request)
+    {
+        $osy = $this->ownProfile($request);
+
+        if (! $osy) {
+            return response()->json(['data' => []]);
+        }
+
+        $rows = $osy->recommendations()
+            ->whereHas('trainingProgram', fn ($q) => $q->where('status', 'active'))
+            ->with('trainingProgram')
+            ->get();
+
+        return response()->json([
+            'data' => $rows->map(fn ($r) => [
+                'rank'             => $r->rank,
+                'id'               => $r->trainingProgram->id,
+                'title'            => $r->trainingProgram->name,
+                'description'      => $r->trainingProgram->description,
+                'image_url'        => $r->trainingProgram->image_url,
+                'requirements'     => $r->trainingProgram->requirements,
+                'schedule'         => $r->trainingProgram->schedule,
+                'slots'            => $r->trainingProgram->slots,
+                'tesda_accredited' => $r->trainingProgram->tesda_accredited,
+                'matched'          => $r->matched_terms ?? [],
+                'score'            => round($r->match_score, 1),
+                'based_on'         => $r->based_on,
+                'generated_at'     => $r->generated_at,
+            ])->values(),
+        ]);
+    }
+
+    // GET: the logged-in OSY's profile
+    public function myProfile(Request $request)
+    {
+        $osy = $this->ownProfile($request);
+
+        if (! $osy) {
+            return response()->json(['message' => 'No OSY profile is linked to this account.'], 404);
+        }
+
+        return response()->json(['data' => $this->ownProfilePayload($osy)]);
+    }
+
+    // PUT: the OSY can only change these four fields
+    public function updateMyProfile(Request $request)
+    {
+        $osy = $this->ownProfile($request);
+
+        if (! $osy) {
+            return response()->json(['message' => 'No OSY profile is linked to this account.'], 404);
+        }
+
+        $request->merge([
+            'contact_number' => $this->normalizePhone($request->input('contact_number')),
+        ]);
+
+        $data = $request->validate([
+            'contact_number'     => ['nullable', 'string', 'regex:/^09\d{9}$/'],
+            'address'            => ['required', 'string', 'min:5', 'max:255'],
+            'available_schedule' => ['nullable', 'string', 'max:255'],
+            'has_transportation' => ['boolean'],
+        ], $this->validationMessages());
+
+        $osy->update($data);
+
+        return response()->json(['data' => $this->ownProfilePayload($osy->fresh())]);
+    }
+
     /** A recommender failure should never block saving the OSY record. */
     private function refreshRecommendations(OsyProfile $osy, CourseRecommender $recommender): void
     {
@@ -309,5 +451,38 @@ class OsyProfileController extends Controller
         } catch (\Throwable $e) {
             report($e);
         }
+    }
+    private const PHOTO_DIR = 'osy_profiles';
+
+    private function storePhoto(UploadedFile $file): string
+    {
+        return $file->store(self::PHOTO_DIR, 'public');
+    }
+
+    private function deletePhoto(?string $path): void
+    {
+        if ($path) {
+            Storage::disk('public')->delete($path);
+        }
+    }
+
+    // POST: the logged-in OSY changes their own photo
+    public function updateMyPhoto(Request $request)
+    {
+        $osy = $this->ownProfile($request);
+
+        if (! $osy) {
+            return response()->json(['message' => 'No OSY profile is linked to this account.'], 404);
+        }
+
+        $request->validate([
+            'profile_photo' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+        ], $this->validationMessages());
+
+        $old = $osy->profile_photo;
+        $osy->update(['profile_photo' => $this->storePhoto($request->file('profile_photo'))]);
+        $this->deletePhoto($old);
+
+        return response()->json(['data' => $this->ownProfilePayload($osy->fresh())]);
     }
 }
