@@ -9,12 +9,14 @@ class TrainingRecommendation extends Model
 {
     protected $fillable = [
         'osy_profile_id', 'training_program_id', 'rank',
-        'match_score', 'based_on', 'matched_terms', 'generated_at',
+        'match_score', 'course_name', 'career_path', 'is_available',
+        'mode', 'based_on', 'relation', 'matched_terms', 'generated_at',
     ];
 
     protected $casts = [
         'matched_terms' => 'array',
         'match_score'   => 'float',
+        'is_available'  => 'boolean',
         'generated_at'  => 'datetime',
     ];
 

@@ -23,18 +23,45 @@
       {
          $profile = $this->referral->osyProfile;
          $name    = $profile ? trim("{$profile->first_name} {$profile->last_name}") : 'The OSY';
-         $program = $this->referral->trainingProgram?->name ?? 'the training program';
+         $program = $this->referral->trainingProgram?->title
+            ?? $this->referral->trainingProgram?->name
+            ?? 'the training program';
 
-         $completed = $this->status === 'Completed';
+         $reason = $this->detail ? " Reason: {$this->detail}." : '';
+
+         [$title, $message] = match ($this->status) {
+            'Accepted by Maxima' => [
+                  'Referral accepted',
+                  "{$name}'s referral to {$program} was accepted by Maxima.",
+            ],
+            'Rejected' => [
+                  'Referral rejected',
+                  "{$name}'s referral to {$program} was rejected.{$reason}",
+            ],
+            'Training Started' => [
+                  'OSY enrolled',
+                  "{$name} is now enrolled in the {$program} training.",
+            ],
+            'Completed' => [
+                  'Training completed',
+                  "{$name} has completed the {$program} training.",
+            ],
+            'Dropped' => [
+                  'OSY dropped from training',
+                  "{$name} was dropped from the {$program} training.{$reason}",
+            ],
+            default => [
+                  'Referral update',
+                  "{$name}'s referral status is now {$this->status}.",
+            ],
+         };
 
          return [
-               'type'        => 'training_status',
-               'title'       => $completed ? 'Training completed' : 'OSY dropped from training',
-               'message'     => $completed
-                  ? "{$name} has completed the {$program} training."
-                  : "{$name} was dropped from the {$program} training." . ($this->detail ? " Reason: {$this->detail}." : ''),
-               'referral_id' => $this->referral->id,
-               'status'      => $this->status,
+            'type'        => 'training_status',
+            'title'       => $title,
+            'message'     => $message,
+            'referral_id' => $this->referral->id,
+            'status'      => $this->status,
          ];
       }
    }

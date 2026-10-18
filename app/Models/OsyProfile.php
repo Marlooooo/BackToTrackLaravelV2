@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Support\Facades\Storage;
-
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class OsyProfile extends Model
 {
@@ -53,7 +53,7 @@ class OsyProfile extends Model
     {
         return $this->hasMany(TrainingRecommendation::class)->orderBy('rank');
     }
-    protected $appends = ['profile_photo_url'];
+    protected $appends = ['profile_photo_url', 'display_status'];
 
     protected function profilePhotoUrl(): Attribute
     {
@@ -61,6 +61,17 @@ class OsyProfile extends Model
             fn () => $this->profile_photo
                 ? Storage::disk('public')->url($this->profile_photo)
                 : null
+        );
+    }
+        public function latestReferral(): HasOne
+    {
+        return $this->hasOne(Referral::class)->latestOfMany();
+    }
+
+    protected function displayStatus(): Attribute
+    {
+        return Attribute::get(
+            fn () => $this->latestReferral?->status ?? $this->current_status
         );
     }
 }

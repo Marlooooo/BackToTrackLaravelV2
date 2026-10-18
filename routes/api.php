@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\MaximaDashboardController;
 use App\Http\Controllers\Api\AnnouncementController;
 use App\Http\Controllers\Api\MaximaProgressController;
 use App\Http\Controllers\Api\OsyProgressController;
+use App\Http\Controllers\Api\DefaultRequirementController;
 
 Route::post('/contact', [ContactController::class, 'send'])->middleware('throttle:2,120');
 Route::post('/login', [AuthController::class, 'login']);
@@ -22,8 +23,10 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::get('/user', [AuthController::class, 'user']);
 
    // SK side: recommendations
+   Route::get('osy-recommendations', [OsyProfileController::class, 'allRecommendations']);
    Route::post('osy-recommendations/preview', [OsyProfileController::class, 'previewRecommendations']);
    Route::get('osy-profiles/{osyProfile}/recommendations', [OsyProfileController::class, 'recommendations']);
+   
 
    // OSY side: the logged-in OSY's own data
    Route::get('/osy/progress', [OsyProgressController::class, 'index']);
@@ -35,6 +38,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
    Route::apiResource('training-programs', TrainingProgramController::class);
    Route::apiResource('osy-profiles', OsyProfileController::class);
+   Route::get('/notifications/referrals/{referral}', [NotificationController::class, 'referralDetail']);
 
    Route::get('/referrals/osy-options', [ReferralController::class, 'osyOptions']);
    Route::get('/referrals/program-options', [ReferralController::class, 'programOptions']);
@@ -46,12 +50,12 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::patch('/maxima/referrals/{referral}/status', [MaximaReferralController::class, 'updateStatus']);
    Route::get('/maxima/enrollees', [MaximaReferralController::class, 'enrollees']);
    Route::get('/maxima/dashboard', [MaximaDashboardController::class, 'index']);
+   Route::get('/maxima/default-requirements', [DefaultRequirementController::class, 'index']);  
+   Route::post('/maxima/default-requirements', [DefaultRequirementController::class, 'store']);
+   Route::delete('/maxima/default-requirements/{defaultRequirement}', [DefaultRequirementController::class, 'destroy']);
 
    Route::get('/maxima/progress', [MaximaProgressController::class, 'index']);
    Route::get('/maxima/progress/{referral}', [MaximaProgressController::class, 'show']);
-   Route::post('/maxima/progress/{referral}', [MaximaProgressController::class, 'store']);
-   Route::put('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'update']);
-   Route::delete('/maxima/progress/reports/{progress}', [MaximaProgressController::class, 'destroy']);
    Route::put('/maxima/progress/{referral}/details', [MaximaProgressController::class, 'updateDetails']);
    Route::post('/maxima/progress/{referral}/start', [MaximaProgressController::class, 'start']);
    Route::post('/maxima/progress/{referral}/complete', [MaximaProgressController::class, 'complete']);

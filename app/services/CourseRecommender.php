@@ -7,6 +7,7 @@
    use Illuminate\Support\Collection;
    use App\Models\TrainingRecommendation;
    use Illuminate\Support\Facades\DB;
+   
 
    class CourseRecommender
    {
@@ -206,114 +207,390 @@
 
       private const AVAILABLE_STATUS = 'active';
 
-      // A word that only matched through a synonym counts a bit less than a word
-      // the OSY actually said.
+      // A word that only matched through a synonym counts a bit less than a word the OSY actually said.
       private const SYNONYM_FACTOR = 0.8;
 
-      // A course must reach this score to be suggested at all (keeps unrelated courses out).
-      private const MIN_CAREER_SCORE = 2.0;
-      private const MIN_NOTES_SCORE = 3.0;
+      // Catalog: a course needs at least one keyword (1 point) to be suggested at all.
+      private const MIN_CATALOG_SCORE = 1.0;
+
+      // Catalog: a course with at least one strong word (3 points) counts as a real match for a career.
+      private const STRONG_SCORE = 3.0;
+
+      // Direct search of Maxima courses (only used for careers the catalog doesn't know).
+      private const MIN_DB_SCORE = 3.0;
+
+      // false = a Maxima program counts as offering a course only when its NAME has the
+      // course words. Set to true to also accept the program description.
+      private const MATCH_DESCRIPTION = false;
+
+      private const NOTE_FIELDS = [
+         'background_circumstances',
+         'personal_observations',
+         'expressed_goals',
+      ];
 
       private ?array $synonymMap = null;
+      private ?array $catalog = null;
 
       /**
-       * - Preferred career filled in: ONE best course for that career.
-       * - Otherwise: up to $limit courses from the interview notes, best first.
-       * Each result has 'based_on' = 'preferred_career' | 'interview_notes'.
+       * - Preferred career entered: the matching Maxima course, or exactly 3 alternatives.
+       * - No preferred career: 3 courses, one from each interview note field.
+       * Every result says whether Maxima really offers it ('available' + real 'program').
        */
-      public function recommend(OsyProfile $osy, int $limit = 3): Collection
+      public function recommend(OsyProfile $osy): Collection
       {
          $programs = TrainingProgram::query()
                ->where('status', self::AVAILABLE_STATUS)
                ->get();
 
-         if ($programs->isEmpty()) {
-               return collect();
-         }
-
-         $noteTerms = $this->buildTerms($this->noteSources($osy));
-
-         // 1) Preferred career: the single best fit
-         $careerTerms = $this->buildTerms([[$osy->preferred_career, 3]]);
-
-         if (! empty($careerTerms)) {
-               $best = $this->rank($programs, $careerTerms, self::MIN_CAREER_SCORE, $noteTerms)
-                  ->take(1)
-                  ->map(fn ($r) => $r + ['based_on' => 'preferred_career'])
-                  ->values();
-
-               if ($best->isNotEmpty()) {
-                  return $best;
-               }
-               // No course fits the career words: fall through to the notes
-         }
-
-         // 2) Interview notes: top $limit
-         if (empty($noteTerms)) {
-               return collect();
-         }
-
-         return $this->rank($programs, $noteTerms, self::MIN_NOTES_SCORE)
-               ->take($limit)
-               ->map(fn ($r) => $r + ['based_on' => 'interview_notes'])
-               ->values();
+         return trim((string) $osy->preferred_career) !== ''
+               ? $this->fromCareer($osy, $programs)
+               : $this->fromNotes($osy, $programs);
       }
-
-
-
-
-      public function recommendAndSave(OsyProfile $osy, int $limit = 3): Collection
+          /** Saves this OSY's current recommendations, replacing any saved earlier. */
+      public function saveFor(OsyProfile $osy): void
       {
-         $results = $this->recommend($osy, $limit);
+         $results = $this->recommend($osy)->values();
 
          DB::transaction(function () use ($osy, $results) {
-            TrainingRecommendation::where('osy_profile_id', $osy->id)->delete();
+               TrainingRecommendation::where('osy_profile_id', $osy->id)->delete();
 
-            $now = now();
-
-            foreach ($results->values() as $i => $r) {
+               foreach ($results as $i => $r) {
                   TrainingRecommendation::create([
-                     'osy_profile_id'      => $osy->id,
-                     'training_program_id' => $r['program']->id,
-                     'rank'                => $i + 1,
-                     'match_score'         => min($r['score'], 999.99),
-                     'based_on'            => $r['based_on'],
-                     'matched_terms'       => $r['matched'],
-                     'generated_at'        => $now,
+                     'osy_profile_id' => $osy->id,
+                     'training_program_id' => $r['program']?->id,
+                     'rank' => $i + 1,
+                     'match_score' => $r['score'] ?? null,
+                     'course_name' => $r['title'],
+                     'career_path' => $r['career_path'],
+                     'is_available' => $r['available'],
+                     'mode' => $r['mode'],
+                     'based_on' => $r['basis'],
+                     'relation' => $r['relation'],
+                     'matched_terms' => $r['matched'],
+                     'generated_at' => now(),
                   ]);
-            }
+               }
          });
-
-         return $results;
-      }
-
-      /** Interview notes, strongest first: goals > observations > background. */
-      private function noteSources(OsyProfile $osy): array
-      {
-         return [
-               [$osy->expressed_goals, 3],
-               [$osy->personal_observations, 2],
-               [$osy->background_circumstances, 1],
-         ];
       }
 
       /**
-       * Scores every program, drops the ones below $minScore, and sorts best first.
-       * $tieTerms only breaks ties between equal scores.
+       * Reads the saved recommendations back in the same shape recommend() returns.
+       * Details of available courses come from the live training_programs row, so
+       * names and descriptions stay current. A program that is no longer active
+       * is shown as Not Available.
        */
-      private function rank(Collection $programs, array $terms, float $minScore, array $tieTerms = []): Collection
+      public function saved(OsyProfile $osy): Collection
       {
-         return $programs
-               ->map(function (TrainingProgram $program) use ($terms, $tieTerms) {
-                  $result = $this->scoreProgram($program, $terms);
-                  $result['tie'] = $tieTerms ? $this->scoreProgram($program, $tieTerms)['score'] : 0;
+         return $osy->recommendations()
+               ->with('trainingProgram')
+               ->get()
+               ->map(function (TrainingRecommendation $rec) {
+                  $program = $rec->trainingProgram;
+                  $available = $rec->is_available
+                     && $program !== null
+                     && $program->status === self::AVAILABLE_STATUS;
 
-                  return $result;
+                  return [
+                     'mode' => $rec->mode,
+                     'basis' => $rec->based_on,
+                     'relation' => $rec->relation,
+                     'available' => $available,
+                     'program' => $available ? $program : null,
+                     'title' => $available ? $program->name : $rec->course_name,
+                     'career_path' => $rec->career_path,
+                     'matched' => $rec->matched_terms ?? [],
+                     'score' => $rec->match_score,
+                  ];
                })
-               ->filter(fn ($r) => $r['score'] >= $minScore)
-               ->sort(fn ($a, $b) => [$b['score'], $b['title_hits'], $b['tie']] <=> [$a['score'], $a['title_hits'], $a['tie']])
                ->values();
       }
+
+      /* ------------------------------------------------------------------ */
+      /* Preferred career                                                   */
+      /* ------------------------------------------------------------------ */
+
+      private function fromCareer(OsyProfile $osy, Collection $programs): Collection
+      {
+         $words = $this->tokenPairs($osy->preferred_career);
+
+         if (empty($words)) {
+               return collect();
+         }
+
+         $rows = $this->rankCatalog($words);
+
+         // The catalog doesn't know this career: only look for a Maxima course directly
+         if (empty($rows)) {
+               $found = $this->searchPrograms($programs, $osy->preferred_career);
+
+               if (! $found) {
+                  return collect();
+               }
+
+               return collect([[
+                  'mode' => 'career_available',
+                  'basis' => 'preferred_career',
+                  'relation' => 'direct',
+                  'available' => true,
+                  'program' => $found['program'],
+                  'title' => $found['program']->name,
+                  'career_path' => null,
+                  'matched' => $found['matched'],
+                  'score' => $found['score'],
+               ]]);
+         }
+
+         // 1) A real match that Maxima offers: recommend that one course
+         foreach ($rows as $row) {
+               if ($row['score'] < self::STRONG_SCORE) {
+                  break; // rows are sorted, so no stronger match follows
+               }
+
+               $program = $this->findAvailableProgram($row['entry'], $programs);
+
+               if ($program) {
+                  return collect([$this->makeResult($row, $program, 'career_available', 'preferred_career')]);
+               }
+         }
+
+         // 2) Maxima has none: exactly three alternatives, best match first
+         $catalog = $this->catalog();
+         $picked = array_slice($rows, 0, 3);
+         $keys = array_map(fn ($r) => $r['entry']['key'], $picked);
+
+         // Fewer than three direct matches: complete the set with related courses
+         foreach ($picked as $row) {
+               foreach ($row['entry']['related'] as $relatedKey) {
+                  if (count($picked) >= 3) {
+                     break 2;
+                  }
+                  if (in_array($relatedKey, $keys, true) || ! isset($catalog[$relatedKey])) {
+                     continue;
+                  }
+
+                  $picked[] = [
+                     'entry' => $catalog[$relatedKey],
+                     'score' => 0.0,
+                     'matched' => [],
+                     'relation' => 'related',
+                  ];
+                  $keys[] = $relatedKey;
+               }
+         }
+
+         // Each alternative is still checked against Maxima's real courses
+         return collect($picked)
+               ->map(fn ($row) => $this->makeResult(
+                  $row,
+                  $this->findAvailableProgram($row['entry'], $programs),
+                  'career_alternatives',
+                  'preferred_career'
+               ))
+               ->values();
+      }
+
+      /** Direct keyword search of Maxima courses (uses SYNONYMS). */
+      private function searchPrograms(Collection $programs, string $career): ?array
+      {
+         $terms = $this->buildTerms([[$career, 3]]);
+
+         if (empty($terms)) {
+               return null;
+         }
+
+         return $programs
+               ->map(fn (TrainingProgram $p) => $this->scoreProgram($p, $terms))
+               ->filter(fn ($r) => $r['score'] >= self::MIN_DB_SCORE)
+               ->sort(fn ($a, $b) => [$b['score'], $b['title_hits']] <=> [$a['score'], $a['title_hits']])
+               ->first();
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Interview notes                                                    */
+      /* ------------------------------------------------------------------ */
+
+      private function fromNotes(OsyProfile $osy, Collection $programs): Collection
+      {
+         // Best catalog courses for each note field on its own
+         $candidates = [];
+         foreach (self::NOTE_FIELDS as $field) {
+               $words = $this->tokenPairs($osy->{$field});
+
+               if (empty($words)) {
+                  continue;
+               }
+
+               foreach (array_slice($this->rankCatalog($words), 0, 5) as $row) {
+                  $candidates[] = $row + ['field' => $field];
+               }
+         }
+
+         // Strongest matches first. Each field and each course is used at most once.
+         usort($candidates, fn ($a, $b) => $b['score'] <=> $a['score']);
+
+         $byField = [];
+         $used = [];
+         foreach ($candidates as $row) {
+               $key = $row['entry']['key'];
+
+               if (isset($byField[$row['field']]) || in_array($key, $used, true)) {
+                  continue;
+               }
+
+               $byField[$row['field']] = $row;
+               $used[] = $key;
+         }
+
+         // Keep the field order: background, observations, goals
+         $results = collect();
+         foreach (self::NOTE_FIELDS as $field) {
+               if (isset($byField[$field])) {
+                  $row = $byField[$field];
+                  $results->push($this->makeResult(
+                     $row,
+                     $this->findAvailableProgram($row['entry'], $programs),
+                     'notes',
+                     $field
+                  ));
+               }
+         }
+
+         // A field with nothing usable: fill its slot from the notes as a whole.
+         // If even that finds nothing, we return fewer than three rather than invent.
+         $missing = count(self::NOTE_FIELDS) - $results->count();
+
+         if ($missing > 0) {
+               $all = $this->tokenPairs(implode(' ', array_filter(
+                  array_map(fn ($f) => $osy->{$f}, self::NOTE_FIELDS)
+               )));
+
+               foreach (array_slice($this->rankCatalog($all, $used), 0, $missing) as $row) {
+                  $results->push($this->makeResult(
+                     $row,
+                     $this->findAvailableProgram($row['entry'], $programs),
+                     'notes',
+                     'interview_notes'
+                  ));
+               }
+         }
+
+         return $results->values();
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Catalog + availability                                             */
+      /* ------------------------------------------------------------------ */
+
+      /** Catalog courses that fit the given words, best first. $words = stem => original word. */
+      private function rankCatalog(array $words, array $excludeKeys = []): array
+      {
+         if (empty($words)) {
+               return [];
+         }
+
+         $rows = [];
+
+         foreach ($this->catalog() as $key => $entry) {
+               if (in_array($key, $excludeKeys, true)) {
+                  continue;
+               }
+
+               $scored = $this->scoreCatalogEntry($entry, $words);
+
+               if ($scored['score'] >= self::MIN_CATALOG_SCORE) {
+                  $rows[] = ['entry' => $entry, 'relation' => 'direct'] + $scored;
+               }
+         }
+
+         usort($rows, fn ($a, $b) => $b['score'] <=> $a['score']);
+
+         return $rows;
+      }
+
+      private function scoreCatalogEntry(array $entry, array $words): array
+      {
+         $score = 0.0;
+         $matched = [];
+
+         foreach ($words as $stem => $word) {
+               if (in_array($stem, $entry['strong_stems'], true)) {
+                  $score += 3;
+               } elseif (in_array($stem, $entry['keyword_stems'], true)) {
+                  $score += 1;
+               } elseif ($this->prefixMatch($stem, $entry['strong_stems'], 5)) {
+                  $score += 1.5;
+               } elseif ($this->prefixMatch($stem, $entry['keyword_stems'], 5)) {
+                  $score += 0.5;
+               } else {
+                  continue;
+               }
+
+               $matched[] = $word;
+         }
+
+         return ['score' => $score, 'matched' => $matched];
+      }
+
+      /** The real Maxima program for a catalog course, or null if Maxima doesn't offer it. */
+      private function findAvailableProgram(array $entry, Collection $programs): ?TrainingProgram
+      {
+         foreach ($programs as $program) {
+               $title = $this->tokens($program->name);
+               $desc = self::MATCH_DESCRIPTION ? $this->tokens($program->description) : [];
+
+               foreach ($entry['alias_stems'] as $phrase) {
+                  if (! array_diff($phrase, $title) || ($desc && ! array_diff($phrase, $desc))) {
+                     return $program;
+                  }
+               }
+         }
+
+         return null;
+      }
+
+      private function makeResult(array $row, ?TrainingProgram $program, string $mode, string $basis): array
+      {
+         return [
+               'mode' => $mode,
+               'basis' => $basis,
+               'relation' => $row['relation'] ?? 'direct',
+               'available' => $program !== null,
+               'program' => $program,
+               'title' => $program?->name ?? $row['entry']['name'],
+               'career_path' => implode(' / ', $row['entry']['careers']),
+               'matched' => array_values(array_unique($row['matched'])),
+               'score' => $row['score'] ?? null,
+         ];
+      }
+
+      /** CourseCatalog with every word reduced to its stem, built once. */
+      private function catalog(): array
+      {
+         if ($this->catalog === null) {
+               $this->catalog = [];
+
+               foreach (CourseCatalog::all() as $key => $entry) {
+                  $this->catalog[$key] = $entry + [
+                     'key' => $key,
+                     'strong_stems' => $this->stemList($entry['strong']),
+                     'keyword_stems' => $this->stemList($entry['keywords']),
+                     'alias_stems' => array_map(fn ($phrase) => $this->stemList($phrase), $entry['aliases']),
+                  ];
+               }
+         }
+
+         return $this->catalog;
+      }
+
+      private function stemList(array $words): array
+      {
+         return array_values(array_unique(array_map(fn ($w) => $this->stem($w), $words)));
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Direct search of Maxima courses (SYNONYMS)                         */
+      /* ------------------------------------------------------------------ */
 
       private function scoreProgram(TrainingProgram $program, array $terms): array
       {
@@ -403,6 +680,10 @@
          return $this->synonymMap;
       }
 
+      /* ------------------------------------------------------------------ */
+      /* Text helpers                                                       */
+      /* ------------------------------------------------------------------ */
+
       /** stem => first original word seen for that stem. */
       private function tokenPairs(?string $text): array
       {
@@ -427,16 +708,16 @@
          return array_keys($this->tokenPairs($text));
       }
 
-      /** One word starts with the other (4+ letters), e.g. "electric" and "electrical". */
-      private function prefixMatch(string $term, array $tokens): bool
+      /** One word starts with the other (at least $min letters), e.g. "electric" and "electrical". */
+      private function prefixMatch(string $term, array $tokens, int $min = 4): bool
       {
-         if (strlen($term) < 4) {
+         if (strlen($term) < $min) {
                return false;
          }
 
          foreach ($tokens as $token) {
                if (
-                  strlen($token) >= 4
+                  strlen($token) >= $min
                   && (str_starts_with($token, $term) || str_starts_with($term, $token))
                ) {
                   return true;

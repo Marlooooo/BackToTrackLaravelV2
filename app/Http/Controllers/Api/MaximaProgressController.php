@@ -16,6 +16,7 @@
       use Illuminate\Support\Arr;
       use Illuminate\Support\Collection;
       use Illuminate\Support\Facades\DB;
+      use App\Models\DefaultRequirement;
 
       class MaximaProgressController extends Controller
       {
@@ -24,14 +25,7 @@
       // Attendance can be recorded (or corrected) once training has started
       private const ATTENDANCE_STATUSES = ['Training Started', 'Completed', 'Dropped'];
 
-      // Every enrolled OSY gets this checklist. Maxima can add more on top of it.
-      private const DEFAULT_DOCUMENTS = [
-            'Valid ID',
-            'Birth certificate',
-            'Barangay certificate',
-            'Recent ID photos',
-            'Medical certificate',
-      ];
+
 
       private const DROP_REASONS = [
             'transport'     => 'Transportation problem',
@@ -65,36 +59,7 @@
       /** Make sure every monitored referral has the default document rows. */
       private function ensureDocuments(Collection $referrals): void
       {
-            if ($referrals->isEmpty()) {
-                  return;
-            }
-
-            $existing = ReferralDocument::whereIn('referral_id', $referrals->pluck('id'))
-                  ->get(['referral_id', 'name'])
-                  ->groupBy('referral_id');
-
-            $now  = now();
-            $rows = [];
-
-            foreach ($referrals as $referral) {
-                  $have = $existing->get($referral->id, collect())->pluck('name')->all();
-
-                  foreach (self::DEFAULT_DOCUMENTS as $name) {
-                  if (!in_array($name, $have, true)) {
-                        $rows[] = [
-                              'referral_id' => $referral->id,
-                              'name'        => $name,
-                              'status'      => 'pending',
-                              'created_at'  => $now,
-                              'updated_at'  => $now,
-                        ];
-                  }
-                  }
-            }
-
-            if ($rows) {
-                  ReferralDocument::insertOrIgnore($rows);
-            }
+            ReferralDocument::ensureFor($referrals);
       }
 
       private function buildSummary(
@@ -199,7 +164,9 @@
                   ->get();
 
             $documents = ReferralDocument::where('referral_id', $referral->id)->orderBy('id')->get();
-            $documents->each(fn ($d) => $d->setAttribute('is_default', in_array($d->name, self::DEFAULT_DOCUMENTS, true)));
+            $defaultNames = DefaultRequirement::pluck('name')->all();
+            $documents->each(fn ($d) => $d->setAttribute('is_default', in_array($d->name, $defaultNames, true)));
+
 
             $notes = ReferralNote::with('user:id,name')
                   ->where('referral_id', $referral->id)
@@ -416,16 +383,39 @@
       /**
        * POST /api/maxima/progress/{referral}/start
        */
+
       public function start(Request $request, Referral $referral)
       {
             $this->authorizeMaxima($request);
-            abort_unless($referral->status === 'Accepted by Maxima', 422, 'Only accepted referrals can be started.');
 
             $data = $request->validate($this->detailRules());
             $data['training_start_date'] = $data['training_start_date'] ?? now()->toDateString();
             $this->assertDateOrder($data['training_start_date'], $data['expected_end_date'] ?? null);
 
-            $this->changeStatus($request, $referral, 'Training Started', $data, null);
+            DB::transaction(function () use ($request, $referral, $data) {
+                  // Lock the row and re-check, so a double click or a second user
+                  // cannot enroll the same OSY twice or skip the requirements.
+                  $current = Referral::whereKey($referral->id)->lockForUpdate()->firstOrFail();
+
+                  abort_unless($current->status === 'Accepted by Maxima', 422, 'Only accepted referrals can be started.');
+
+                  ReferralDocument::ensureFor(collect([$current]));
+
+                  $pending = ReferralDocument::where('referral_id', $current->id)
+                  ->where('status', 'pending')
+                  ->count();
+
+                  abort_if(
+                  $pending > 0,
+                  422,
+                  "Cannot enroll yet: {$pending} " . ($pending === 1 ? 'requirement is' : 'requirements are') . ' still pending.'
+                  );
+
+                  $this->changeStatus($request, $current, 'Training Started', $data, null);
+            });
+
+            $referral->refresh(); // the transaction changed a different copy, so reload this one
+            $this->notifyReferrer($referral, 'Training Started');
 
             return response()->json($this->detail($referral));
       }
@@ -581,50 +571,63 @@
       /**
        * POST /api/maxima/progress/{referral}/documents  (add a custom requirement)
        */
+
       public function storeDocument(Request $request, Referral $referral)
       {
-            $this->authorizeMaxima($request);
-            $this->ensureMonitored($referral);
+      $this->authorizeMaxima($request);
 
-            $data = $request->validate(['name' => 'required|string|max:100']);
-            $name = trim($data['name']);
+      abort_unless($referral->status === 'Accepted by Maxima', 422, 'Requirements can only be added while the OSY is still Accepted.');
 
-            if (ReferralDocument::where('referral_id', $referral->id)->where('name', $name)->exists()) {
-                  abort(422, 'That document is already in the list.');
-            }
+      $data = $request->validate(['name' => 'required|string|max:100']);
+      $name = preg_replace('/\s+/', ' ', trim($data['name']));
 
-            ReferralDocument::create([
-                  'referral_id' => $referral->id,
-                  'name'        => $name,
-                  'status'      => 'pending',
-                  'updated_by'  => $request->user()->id,
-            ]);
+      if (ReferralDocument::where('referral_id', $referral->id)->where('name', $name)->exists()) {
+            abort(422, 'That requirement is already in the list.');
+      }
 
-            return response()->json($this->detail($referral));
+      ReferralDocument::create([
+            'referral_id' => $referral->id,
+            'name'        => $name,
+            'status'      => 'pending',
+            'updated_by'  => $request->user()->id,
+      ]);
+
+      return response()->json($this->detail($referral));
       }
 
       /**
        * PUT /api/maxima/progress/documents/{document}
        */
+/**
+ * PUT /api/maxima/progress/documents/{document}
+ */
       public function updateDocument(Request $request, ReferralDocument $document)
       {
-            $this->authorizeMaxima($request);
+      $this->authorizeMaxima($request);
 
-            $data = $request->validate([
-                  'status'  => 'required|in:pending,received,not_applicable',
-                  'remarks' => 'nullable|string|max:255',
-            ]);
+      $referral = $document->referral;
 
-            $document->update([
-                  'status'      => $data['status'],
-                  'remarks'     => $data['remarks'] ?? null,
-                  'received_at' => $data['status'] === 'received'
+      abort_unless(
+            in_array($referral->status, ['Accepted by Maxima', 'Training Started'], true),
+            422,
+            'Requirements can no longer be changed for this OSY.'
+      );
+
+      $data = $request->validate([
+            'status'  => 'required|in:pending,received,not_applicable',
+            'remarks' => 'nullable|string|max:255',
+      ]);
+
+      $document->update([
+            'status'      => $data['status'],
+            'remarks'     => $data['remarks'] ?? null,
+            'received_at' => $data['status'] === 'received'
                   ? ($document->received_at ?: now()->toDateString())
                   : null,
-                  'updated_by'  => $request->user()->id,
-            ]);
+            'updated_by'  => $request->user()->id,
+      ]);
 
-            return response()->json($this->detail($document->referral));
+      return response()->json($this->detail($referral));
       }
 
       /**
@@ -635,9 +638,9 @@
             $this->authorizeMaxima($request);
 
             abort_if(
-                  in_array($document->name, self::DEFAULT_DOCUMENTS, true),
+                  DefaultRequirement::where('name', $document->name)->exists(),
                   422,
-                  'Standard documents cannot be removed. Mark it as not applicable instead.'
+                  'Default requirements cannot be removed from one OSY. Mark it as not applicable instead.'
             );
 
             $referral = $document->referral;

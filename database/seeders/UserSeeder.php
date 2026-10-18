@@ -10,22 +10,27 @@
    {
       public function run(): void
       {
-         // The first account of each role is the one to use for quick logins.
-         $staff = [
-               ['Ramon Dizon',        'ramon.dizon@backtotrack.ph',        'maxima_tesda_school'],
-               ['Teresita Agbayani',  'teresita.agbayani@backtotrack.ph',  'maxima_tesda_school'],
-               ['Jericho Valdez',     'jericho.valdez@backtotrack.ph',     'sk_officials'],
-               ['Shaira Manuel',      'shaira.manuel@backtotrack.ph',      'sk_officials'],
+         $users = [
+               [
+                  'name'  => 'Maxima TESDA School',
+                  'email' => 'maxima@backtotrack.test',
+                  'role'  => 'maxima_tesda_school',
+               ],
+               [
+                  'name'  => 'SK Official',
+                  'email' => 'sk@backtotrack.test',
+                  'role'  => 'sk_officials',
+               ],
          ];
 
-         foreach ($staff as [$name, $email, $role]) {
-               $user = User::firstOrNew(['email' => $email]);
-               $user->forceFill([
-                  'name' => $name,
-                  'password' => Hash::make('password'),
-                  'role' => $role,
-                  'email_verified_at' => now(),
-               ])->save();
+         foreach ($users as $data) {
+               User::updateOrCreate(
+                  ['email' => $data['email']],
+                  $data + [
+                     'password'          => Hash::make('password'),
+                     'email_verified_at' => now(),
+                  ]
+               );
          }
       }
    }

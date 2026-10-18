@@ -9,9 +9,10 @@
    class Referral extends Model
    {
       // How the enum values map to the three boxes on the barangay page.
+   // How the enum values map to the three boxes on the Barangay and Maxima referral pages.
       public const PENDING_STATUSES  = ['Registered', 'Validated', 'Referred'];
       public const APPROVED_STATUSES = ['Accepted by Maxima', 'Training Started', 'Completed'];
-      public const REJECTED_STATUSES = ['Rejected'];
+      public const REJECTED_STATUSES = ['Rejected', 'Dropped'];
 
       public static function statusesForGroup(string $group): array
       {
