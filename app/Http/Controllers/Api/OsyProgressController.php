@@ -75,7 +75,7 @@
                ->get()
                ->groupBy('referral_id');
 
-         $trainings = $referrals->map(fn ($referral) => $this->present(
+         $trainings = $referrals->map(fn (Referral $referral) => $this->present(
                $referral,
                $attendanceBy->get($referral->id, collect()),
                $documentsBy->get($referral->id, collect()),
@@ -177,6 +177,14 @@
                   ->map(fn ($log) => [
                      'status' => $log->status,
                      'date'   => $log->created_at?->toDateString(),
+                  ])
+                  ->values(),
+                  // same list Maxima's Status history shows: every status, newest first, with time
+               'history'             => $logs
+                  ->reverse()
+                  ->map(fn ($log) => [
+                     'status'     => $log->status,
+                     'created_at' => $log->created_at,
                   ])
                   ->values(),
          ];

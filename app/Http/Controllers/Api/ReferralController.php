@@ -15,6 +15,7 @@
    use Illuminate\Support\Facades\DB;
    use Illuminate\Support\Facades\Notification;
    use Illuminate\Validation\Rule;
+   use App\Notifications\ReferralUpdateForOsy;
 
    class ReferralController extends Controller
    {
@@ -195,6 +196,9 @@
                report($e);
          }
 
+         // Tell the OSY they were referred
+         ReferralUpdateForOsy::send($referral, 'Referred');
+
          return response()->json($referral->load('osyProfile', 'trainingProgram'), 201);
       }
 
@@ -219,6 +223,9 @@
                $current->statusLogs()->delete();
                $current->delete();
          });
+
+         // Tell the OSY the pending referral was withdrawn
+         ReferralUpdateForOsy::send($referral, 'Withdrawn');
 
          return response()->json(['message' => 'Referral deleted.']);
       }

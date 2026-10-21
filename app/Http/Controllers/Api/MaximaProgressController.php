@@ -17,10 +17,13 @@
       use Illuminate\Support\Collection;
       use Illuminate\Support\Facades\DB;
       use App\Models\DefaultRequirement;
+      use App\Notifications\ReferralUpdateForOsy;
 
       class MaximaProgressController extends Controller
       {
       private const MONITORED = ['Accepted by Maxima', 'Training Started', 'Completed', 'Dropped'];
+      // Progress Monitoring lists only OSY who were actually enrolled
+      private const ENROLLED_STATUSES = ['Training Started', 'Completed'];
 
       // Attendance can be recorded (or corrected) once training has started
       private const ATTENDANCE_STATUSES = ['Training Started', 'Completed', 'Dropped'];
@@ -216,8 +219,15 @@
             $this->authorizeMaxima($request);
 
             $referrals = Referral::with(['osyProfile', 'trainingProgram'])
-                  ->whereIn('status', self::MONITORED)
-                  ->when($request->search, function ($q, $search) {
+                  ->where(function ($q) {
+                  $q->whereIn('status', self::ENROLLED_STATUSES)
+                        // Dropped only counts if they were enrolled first.
+                        // An accepted OSY that Maxima ignored was never in training.
+                        ->orWhere(function ($q) {
+                        $q->where('status', 'Dropped')
+                              ->whereHas('statusLogs', fn ($l) => $l->where('status', 'Training Started'));
+                        });
+                  })                  ->when($request->search, function ($q, $search) {
                   $q->whereHas('osyProfile', function ($p) use ($search) {
                         $p->where('first_name', 'like', "%{$search}%")
                               ->orWhere('middle_name', 'like', "%{$search}%")
@@ -248,7 +258,7 @@
                   ->get()
                   ->groupBy('referral_id');
 
-            $referrals->each(function ($referral) use ($attendanceBy, $documentsBy, $notesBy, $concernsBy, $startLogsBy) {
+            $referrals->each(function (Referral $referral) use ($attendanceBy, $documentsBy, $notesBy, $concernsBy, $startLogsBy) {
                   $startLog  = $startLogsBy->get($referral->id, collect())->first();
                   $startedOn = $referral->training_start_date ?: $startLog?->created_at?->toDateString();
                   $lastNote  = isset($notesBy[$referral->id]) ? Carbon::parse($notesBy[$referral->id]) : null;
@@ -416,6 +426,8 @@
 
             $referral->refresh(); // the transaction changed a different copy, so reload this one
             $this->notifyReferrer($referral, 'Training Started');
+            ReferralUpdateForOsy::send($referral, 'Training Started');
+
 
             return response()->json($this->detail($referral));
       }
@@ -434,6 +446,8 @@
 
             $this->changeStatus($request, $referral, 'Completed', $data, $data['outcome_remarks'] ?? null);
             $this->notifyReferrer($referral, 'Completed');
+            ReferralUpdateForOsy::send($referral, 'Completed');
+
 
             return response()->json($this->detail($referral));
       }
@@ -458,8 +472,11 @@
             $logRemarks  = $reasonLabel . (!empty($data['outcome_remarks']) ? ': ' . $data['outcome_remarks'] : '');
 
             $this->changeStatus($request, $referral, 'Dropped', $data, $logRemarks);
-            $this->notifyReferrer($referral, 'Dropped', $reasonLabel);
 
+            $this->notifyReferrer($referral, 'Dropped', $reasonLabel);
+            ReferralUpdateForOsy::send($referral, 'Dropped', $reasonLabel);
+
+            
             return response()->json($this->detail($referral));
       }
 

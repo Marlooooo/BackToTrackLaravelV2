@@ -13,6 +13,10 @@ use App\Http\Controllers\Api\AnnouncementController;
 use App\Http\Controllers\Api\MaximaProgressController;
 use App\Http\Controllers\Api\OsyProgressController;
 use App\Http\Controllers\Api\DefaultRequirementController;
+use App\Http\Controllers\Api\BarangayProgressController;
+use App\Http\Controllers\Api\OsyReferralController;
+
+
 
 Route::post('/contact', [ContactController::class, 'send'])->middleware('throttle:2,120');
 Route::post('/login', [AuthController::class, 'login']);
@@ -35,6 +39,7 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::put('/osy/profile', [OsyProfileController::class, 'updateMyProfile']);
    Route::put('/osy/password', [AuthController::class, 'updatePassword']);
    Route::post('/osy/profile/photo', [OsyProfileController::class, 'updateMyPhoto']);
+   Route::get('/osy/referrals', [OsyReferralController::class, 'index']);
 
    Route::apiResource('training-programs', TrainingProgramController::class);
    Route::apiResource('osy-profiles', OsyProfileController::class);
@@ -79,4 +84,7 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::post('/announcements', [AnnouncementController::class, 'store']);
    Route::put('/announcements/{announcement}', [AnnouncementController::class, 'update']);
    Route::delete('/announcements/{announcement}', [AnnouncementController::class, 'destroy']);
+
+   Route::get('/barangay/training-monitoring', [BarangayProgressController::class, 'index']);
+   Route::get('/barangay/training-monitoring/{referral}', [BarangayProgressController::class, 'show']);
 });

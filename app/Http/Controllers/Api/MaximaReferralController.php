@@ -8,6 +8,7 @@ use App\Models\Referral;
 use App\Models\ReferralDocument;
 use App\Models\ReferralStatusLog;
 use App\Models\User;
+use App\Notifications\ReferralUpdateForOsy;
 use App\Notifications\TrainingStatusChanged;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -160,11 +161,13 @@ class MaximaReferralController extends Controller
             return $current;
         });
 
-        $this->notifyReferrer(
-            $referral,
-            $data['status'],
-            $data['status'] === 'Rejected' ? ($data['remarks'] ?? null) : null
-        );
+        $rejectionReason = $data['status'] === 'Rejected' ? ($data['remarks'] ?? null) : null;
+
+        // Tell the SK official who made the referral
+        $this->notifyReferrer($referral, $data['status'], $rejectionReason);
+
+        // Tell the OSY themselves
+        ReferralUpdateForOsy::send($referral, $data['status'], $rejectionReason);
 
         return response()->json(
             $referral->load('osyProfile', 'trainingProgram', 'referrer:id,name', 'reviewer:id,name')
