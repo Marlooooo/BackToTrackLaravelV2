@@ -74,6 +74,12 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::put('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'updateDocument']);
    Route::delete('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'destroyDocument']);
    Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
+   Route::post('/maxima/progress/{referral}/assessments', [MaximaProgressController::class, 'storeAssessment']);
+   Route::delete('/maxima/progress/assessments/{assessment}', [MaximaProgressController::class, 'destroyAssessment']);
+   Route::post('/maxima/progress/{referral}/conduct', [MaximaProgressController::class, 'storeConduct']);
+   Route::delete('/maxima/progress/conduct/{conduct}', [MaximaProgressController::class, 'destroyConduct']);
+   Route::post('/maxima/progress/{referral}/concerns', [MaximaProgressController::class, 'storeConcern']);
+
 
    Route::get('/notifications', [NotificationController::class, 'index']);
    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);

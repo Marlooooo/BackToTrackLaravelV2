@@ -77,4 +77,13 @@
       {
          return $this->hasMany(AbsenceConcern::class)->latest();
       }
+      public function trainingAssessments(): HasMany
+      {
+         return $this->hasMany(TrainingAssessment::class);
+      }
+
+      public function conductRecords(): HasMany
+      {
+         return $this->hasMany(ConductRecord::class);
+      }
    }

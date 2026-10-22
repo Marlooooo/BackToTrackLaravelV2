@@ -5,10 +5,12 @@
       use App\Http\Controllers\Controller;
       use App\Models\AbsenceConcern;
       use App\Models\AttendanceRecord;
+      use App\Models\ConductRecord;
       use App\Models\Referral;
       use App\Models\ReferralDocument;
       use App\Models\ReferralNote;
       use App\Models\ReferralStatusLog;
+      use App\Models\TrainingAssessment;
       use App\Models\User;
       use App\Notifications\TrainingStatusChanged;
       use Carbon\Carbon;
@@ -28,8 +30,6 @@
       // Attendance can be recorded (or corrected) once training has started
       private const ATTENDANCE_STATUSES = ['Training Started', 'Completed', 'Dropped'];
 
-
-
       private const DROP_REASONS = [
             'transport'     => 'Transportation problem',
             'work'          => 'Needs to work',
@@ -43,6 +43,8 @@
       private const MIN_ATTENDANCE = 75;  // % (after at least 3 counted days)
       private const MAX_ABSENCES   = 3;
       private const STALE_DAYS     = 14;
+      private const MIN_ASSESSMENT = 75; // % average below this raises an alert
+      private const CONDUCT_RATINGS = ['excellent', 'good', 'fair', 'needs_improvement'];
 
       private function authorizeMaxima(Request $request): void
       {
@@ -70,6 +72,8 @@
             ?string $startedOn,
             Collection $attendance,
             Collection $documents,
+            Collection $assessments,
+            Collection $conduct,
             $lastNoteAt,
             int $pendingConcerns
       ): array {
@@ -88,6 +92,13 @@
             $docsRequired = $applicable->count();
             $docsReceived = $applicable->where('status', 'received')->count();
             $docsMissing  = $docsRequired - $docsReceived;
+
+            // Assessments (average of score / max score) and latest conduct rating
+            $scored        = $assessments->filter(fn ($a) => $a->max_score > 0);
+            $assessmentAvg = $scored->isEmpty()
+                  ? null
+                  : round($scored->avg(fn ($a) => $a->score / $a->max_score * 100), 1);
+            $latestConduct = $conduct->sortBy([['recorded_on', 'desc'], ['id', 'desc']])->first();
 
             // Training day
             $start       = $startedOn ? Carbon::parse($startedOn)->startOfDay() : null;
@@ -130,6 +141,12 @@
                   if ($pendingConcerns > 0) {
                   $alerts[] = $pendingConcerns . ' pending ' . ($pendingConcerns === 1 ? 'concern' : 'concerns');
                   }
+                  if ($assessmentAvg !== null && $scored->count() >= 2 && $assessmentAvg < self::MIN_ASSESSMENT) {
+                  $alerts[] = "Low assessment average ({$assessmentAvg}%)";
+                  }
+                  if ($latestConduct?->rating === 'needs_improvement') {
+                  $alerts[] = 'Conduct needs improvement';
+                  }
             }
 
             if (in_array($referral->status, ['Accepted by Maxima', 'Training Started'], true) && $docsMissing > 0) {
@@ -137,19 +154,22 @@
             }
 
             return [
-                  'present'          => $present,
-                  'late'             => $late,
-                  'absent'           => $absent,
-                  'excused'          => $excused,
-                  'attendance_days'  => $attendance->count(),
-                  'attendance_rate'  => $rate,
-                  'docs_required'    => $docsRequired,
-                  'docs_received'    => $docsReceived,
-                  'training_day'     => $trainingDay,
-                  'training_length'  => $trainingLength,
-                  'last_activity'    => $lastActivity,
-                  'alerts'           => $alerts,
-                  'needs_attention'  => count($alerts) > 0,
+                  'present'            => $present,
+                  'late'               => $late,
+                  'absent'             => $absent,
+                  'excused'            => $excused,
+                  'attendance_days'    => $attendance->count(),
+                  'attendance_rate'    => $rate,
+                  'docs_required'      => $docsRequired,
+                  'docs_received'      => $docsReceived,
+                  'assessment_average' => $assessmentAvg,
+                  'assessment_count'   => $assessments->count(),
+                  'conduct_rating'     => $latestConduct?->rating,
+                  'training_day'       => $trainingDay,
+                  'training_length'    => $trainingLength,
+                  'last_activity'      => $lastActivity,
+                  'alerts'             => $alerts,
+                  'needs_attention'    => count($alerts) > 0,
             ];
       }
 
@@ -170,6 +190,10 @@
             $defaultNames = DefaultRequirement::pluck('name')->all();
             $documents->each(fn ($d) => $d->setAttribute('is_default', in_array($d->name, $defaultNames, true)));
 
+            $assessments = TrainingAssessment::where('referral_id', $referral->id)
+                  ->orderByDesc('assessed_on')->orderByDesc('id')->get();
+            $conduct = ConductRecord::where('referral_id', $referral->id)
+                  ->orderByDesc('recorded_on')->orderByDesc('id')->get();
 
             $notes = ReferralNote::with('user:id,name')
                   ->where('referral_id', $referral->id)
@@ -187,12 +211,14 @@
             $startLog  = $logs->firstWhere('status', 'Training Started');
             $startedOn = $referral->training_start_date ?: $startLog?->created_at?->toDateString();
 
-            $referral->started_on = $startedOn;
-            $referral->attendance = $attendance;
-            $referral->documents  = $documents;
-            $referral->notes      = $notes;
-            $referral->concerns   = $concerns;
-            $referral->history    = $logs->map(fn ($log) => [
+            $referral->started_on  = $startedOn;
+            $referral->attendance  = $attendance;
+            $referral->documents   = $documents;
+            $referral->assessments = $assessments;
+            $referral->conduct     = $conduct;
+            $referral->notes       = $notes;
+            $referral->concerns    = $concerns;
+            $referral->history     = $logs->map(fn ($log) => [
                   'status'     => $log->status,
                   'remarks'    => $log->remarks,
                   'changed_by' => $names[$log->changed_by] ?? null,
@@ -204,6 +230,8 @@
                   $startedOn,
                   $attendance,
                   $documents,
+                  $assessments,
+                  $conduct,
                   $notes->max('created_at'),
                   $concerns->where('status', 'pending')->count()
             );
@@ -224,10 +252,11 @@
                         // Dropped only counts if they were enrolled first.
                         // An accepted OSY that Maxima ignored was never in training.
                         ->orWhere(function ($q) {
-                        $q->where('status', 'Dropped')
+                              $q->where('status', 'Dropped')
                               ->whereHas('statusLogs', fn ($l) => $l->where('status', 'Training Started'));
                         });
-                  })                  ->when($request->search, function ($q, $search) {
+                  })
+                  ->when($request->search, function ($q, $search) {
                   $q->whereHas('osyProfile', function ($p) use ($search) {
                         $p->where('first_name', 'like', "%{$search}%")
                               ->orWhere('middle_name', 'like', "%{$search}%")
@@ -241,24 +270,26 @@
 
             $ids = $referrals->pluck('id');
 
-            $attendanceBy = AttendanceRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
-            $documentsBy  = ReferralDocument::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
-            $notesBy      = ReferralNote::whereIn('referral_id', $ids)
+            $attendanceBy  = AttendanceRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $documentsBy   = ReferralDocument::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $assessmentsBy = TrainingAssessment::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $conductBy     = ConductRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $notesBy       = ReferralNote::whereIn('referral_id', $ids)
                   ->selectRaw('referral_id, MAX(created_at) as last_at')
                   ->groupBy('referral_id')
                   ->pluck('last_at', 'referral_id');
-            $concernsBy   = AbsenceConcern::whereIn('referral_id', $ids)
+            $concernsBy    = AbsenceConcern::whereIn('referral_id', $ids)
                   ->where('status', 'pending')
                   ->selectRaw('referral_id, COUNT(*) as total')
                   ->groupBy('referral_id')
                   ->pluck('total', 'referral_id');
-            $startLogsBy  = ReferralStatusLog::whereIn('referral_id', $ids)
+            $startLogsBy   = ReferralStatusLog::whereIn('referral_id', $ids)
                   ->where('status', 'Training Started')
                   ->orderBy('created_at')
                   ->get()
                   ->groupBy('referral_id');
 
-            $referrals->each(function (Referral $referral) use ($attendanceBy, $documentsBy, $notesBy, $concernsBy, $startLogsBy) {
+            $referrals->each(function (Referral $referral) use ($attendanceBy, $documentsBy, $assessmentsBy, $conductBy, $notesBy, $concernsBy, $startLogsBy) {
                   $startLog  = $startLogsBy->get($referral->id, collect())->first();
                   $startedOn = $referral->training_start_date ?: $startLog?->created_at?->toDateString();
                   $lastNote  = isset($notesBy[$referral->id]) ? Carbon::parse($notesBy[$referral->id]) : null;
@@ -269,6 +300,8 @@
                   $startedOn,
                   $attendanceBy->get($referral->id, collect()),
                   $documentsBy->get($referral->id, collect()),
+                  $assessmentsBy->get($referral->id, collect()),
+                  $conductBy->get($referral->id, collect()),
                   $lastNote,
                   (int) ($concernsBy[$referral->id] ?? 0)
                   );
@@ -321,10 +354,10 @@
       private function outcomeRules(): array
       {
             return [
-                  'training_end_date'    => 'nullable|date',
+                  'training_end_date'     => 'nullable|date',
                   'after_training_status' => 'nullable|in:employed,self_employed,further_training,looking_for_work,other',
-                  'after_training_note'  => 'nullable|string|max:255',
-                  'outcome_remarks'      => 'nullable|string|max:1000',
+                  'after_training_note'   => 'nullable|string|max:255',
+                  'outcome_remarks'       => 'nullable|string|max:1000',
             ];
       }
 
@@ -393,7 +426,6 @@
       /**
        * POST /api/maxima/progress/{referral}/start
        */
-
       public function start(Request $request, Referral $referral)
       {
             $this->authorizeMaxima($request);
@@ -428,7 +460,6 @@
             $this->notifyReferrer($referral, 'Training Started');
             ReferralUpdateForOsy::send($referral, 'Training Started');
 
-
             return response()->json($this->detail($referral));
       }
 
@@ -447,7 +478,6 @@
             $this->changeStatus($request, $referral, 'Completed', $data, $data['outcome_remarks'] ?? null);
             $this->notifyReferrer($referral, 'Completed');
             ReferralUpdateForOsy::send($referral, 'Completed');
-
 
             return response()->json($this->detail($referral));
       }
@@ -476,7 +506,6 @@
             $this->notifyReferrer($referral, 'Dropped', $reasonLabel);
             ReferralUpdateForOsy::send($referral, 'Dropped', $reasonLabel);
 
-            
             return response()->json($this->detail($referral));
       }
 
@@ -546,6 +575,95 @@
       }
 
       // ------------------------------------------------------------------
+      // Assessments + conduct
+      // ------------------------------------------------------------------
+
+      private function assertCanRecord(Referral $referral, string $what): void
+      {
+            abort_unless(
+                  in_array($referral->status, self::ATTENDANCE_STATUSES, true),
+                  422,
+                  "Start the training first before recording {$what}."
+            );
+      }
+
+      /**
+       * POST /api/maxima/progress/{referral}/assessments
+       */
+      public function storeAssessment(Request $request, Referral $referral)
+      {
+            $this->authorizeMaxima($request);
+            $this->assertCanRecord($referral, 'assessments');
+
+            $data = $request->validate([
+                  'title'       => 'required|string|max:100',
+                  'score'       => 'required|numeric|min:0',
+                  'max_score'   => 'required|numeric|gt:0',
+                  'assessed_on' => 'required|date|before_or_equal:today',
+                  'remarks'     => 'nullable|string|max:255',
+            ]);
+
+            abort_if($data['score'] > $data['max_score'], 422, 'The score cannot be higher than the maximum score.');
+
+            TrainingAssessment::create($data + [
+                  'referral_id' => $referral->id,
+                  'recorded_by' => $request->user()->id,
+            ]);
+
+            return response()->json($this->detail($referral));
+      }
+
+      /**
+       * DELETE /api/maxima/progress/assessments/{assessment}
+       */
+      public function destroyAssessment(Request $request, TrainingAssessment $assessment)
+      {
+            $this->authorizeMaxima($request);
+
+            $referral = $assessment->referral;
+            $assessment->delete();
+
+            return response()->json($this->detail($referral));
+      }
+
+      /**
+       * POST /api/maxima/progress/{referral}/conduct
+       */
+      public function storeConduct(Request $request, Referral $referral)
+      {
+            $this->authorizeMaxima($request);
+            $this->assertCanRecord($referral, 'conduct');
+
+            $data = $request->validate([
+                  'rating'      => 'required|in:' . implode(',', self::CONDUCT_RATINGS),
+                  'remarks'     => 'required_if:rating,needs_improvement|nullable|string|max:255',
+                  'recorded_on' => 'required|date|before_or_equal:today',
+            ], [
+                  'remarks.required_if' => 'Please explain what needs improvement.',
+            ]);
+
+            ConductRecord::create($data + [
+                  'referral_id' => $referral->id,
+                  'recorded_by' => $request->user()->id,
+            ]);
+
+            return response()->json($this->detail($referral));
+      }
+
+      /**
+       * DELETE /api/maxima/progress/conduct/{conduct}
+       */
+      public function destroyConduct(Request $request, ConductRecord $conduct)
+      {
+            $this->authorizeMaxima($request);
+
+            $referral = $conduct->referral;
+            $conduct->delete();
+
+            return response()->json($this->detail($referral));
+      }
+
+      // ------------------------------------------------------------------
       // Notes
       // ------------------------------------------------------------------
 
@@ -588,63 +706,59 @@
       /**
        * POST /api/maxima/progress/{referral}/documents  (add a custom requirement)
        */
-
       public function storeDocument(Request $request, Referral $referral)
       {
-      $this->authorizeMaxima($request);
+            $this->authorizeMaxima($request);
 
-      abort_unless($referral->status === 'Accepted by Maxima', 422, 'Requirements can only be added while the OSY is still Accepted.');
+            abort_unless($referral->status === 'Accepted by Maxima', 422, 'Requirements can only be added while the OSY is still Accepted.');
 
-      $data = $request->validate(['name' => 'required|string|max:100']);
-      $name = preg_replace('/\s+/', ' ', trim($data['name']));
+            $data = $request->validate(['name' => 'required|string|max:100']);
+            $name = preg_replace('/\s+/', ' ', trim($data['name']));
 
-      if (ReferralDocument::where('referral_id', $referral->id)->where('name', $name)->exists()) {
-            abort(422, 'That requirement is already in the list.');
-      }
+            if (ReferralDocument::where('referral_id', $referral->id)->where('name', $name)->exists()) {
+                  abort(422, 'That requirement is already in the list.');
+            }
 
-      ReferralDocument::create([
-            'referral_id' => $referral->id,
-            'name'        => $name,
-            'status'      => 'pending',
-            'updated_by'  => $request->user()->id,
-      ]);
+            ReferralDocument::create([
+                  'referral_id' => $referral->id,
+                  'name'        => $name,
+                  'status'      => 'pending',
+                  'updated_by'  => $request->user()->id,
+            ]);
 
-      return response()->json($this->detail($referral));
+            return response()->json($this->detail($referral));
       }
 
       /**
        * PUT /api/maxima/progress/documents/{document}
        */
-/**
- * PUT /api/maxima/progress/documents/{document}
- */
       public function updateDocument(Request $request, ReferralDocument $document)
       {
-      $this->authorizeMaxima($request);
+            $this->authorizeMaxima($request);
 
-      $referral = $document->referral;
+            $referral = $document->referral;
 
-      abort_unless(
-            in_array($referral->status, ['Accepted by Maxima', 'Training Started'], true),
-            422,
-            'Requirements can no longer be changed for this OSY.'
-      );
+            abort_unless(
+                  in_array($referral->status, ['Accepted by Maxima', 'Training Started'], true),
+                  422,
+                  'Requirements can no longer be changed for this OSY.'
+            );
 
-      $data = $request->validate([
-            'status'  => 'required|in:pending,received,not_applicable',
-            'remarks' => 'nullable|string|max:255',
-      ]);
+            $data = $request->validate([
+                  'status'  => 'required|in:pending,received,not_applicable',
+                  'remarks' => 'nullable|string|max:255',
+            ]);
 
-      $document->update([
-            'status'      => $data['status'],
-            'remarks'     => $data['remarks'] ?? null,
-            'received_at' => $data['status'] === 'received'
+            $document->update([
+                  'status'      => $data['status'],
+                  'remarks'     => $data['remarks'] ?? null,
+                  'received_at' => $data['status'] === 'received'
                   ? ($document->received_at ?: now()->toDateString())
                   : null,
-            'updated_by'  => $request->user()->id,
-      ]);
+                  'updated_by'  => $request->user()->id,
+            ]);
 
-      return response()->json($this->detail($referral));
+            return response()->json($this->detail($referral));
       }
 
       /**
@@ -670,6 +784,28 @@
       // Concerns
       // ------------------------------------------------------------------
 
+            /**
+       * POST /api/maxima/progress/{referral}/concerns
+       */
+      public function storeConcern(Request $request, Referral $referral)
+      {
+            $this->authorizeMaxima($request);
+            $this->assertCanRecord($referral, 'concerns');
+
+            $data = $request->validate([
+                  'type'        => 'required|in:absence,concern',
+                  'description' => 'required|string|max:1000',
+            ]);
+
+            AbsenceConcern::create($data + [
+                  'referral_id'  => $referral->id,
+                  'submitted_by' => $request->user()->id,
+                  'status'       => 'pending',
+            ]);
+
+            return response()->json($this->detail($referral));
+      }
+
       /**
        * PATCH /api/maxima/absence-concerns/{concern}
        */
@@ -686,4 +822,4 @@
 
             return response()->json($this->detail($concern->referral));
       }
-}
+      }

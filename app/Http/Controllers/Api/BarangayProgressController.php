@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AbsenceConcern;
 use App\Models\AttendanceRecord;
+use App\Models\ConductRecord;
 use App\Models\Referral;
 use App\Models\ReferralNote;
 use App\Models\ReferralStatusLog;
+use App\Models\TrainingAssessment;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -25,6 +27,7 @@ class BarangayProgressController extends Controller
       private const MIN_ATTENDANCE = 75;
       private const MAX_ABSENCES   = 3;
       private const STALE_DAYS     = 14;
+      private const MIN_ASSESSMENT = 75; // % average below this raises an alert
 
       private function authorizeSk(Request $request): void
       {
@@ -51,10 +54,20 @@ class BarangayProgressController extends Controller
             return (int) round(($to->timestamp - $from->timestamp) / 86400);
       }
 
-      private function summary(Referral $referral, ?string $startedOn, Collection $attendance, $lastNoteAt, int $pending): array
-      {
-            $today = Carbon::today();
+      private function summary(
+            Referral $referral,
+            ?string $startedOn,
+            Collection $attendance,
+            $lastNoteAt,
+            int $pending,
+            ?Collection $assessments = null,
+            ?Collection $conduct = null
+      ): array {
+            $today       = Carbon::today();
+            $assessments = $assessments ?? collect();
+            $conduct     = $conduct ?? collect();
 
+            // Attendance (excused days are not counted against the OSY)
             $present = $attendance->where('status', 'present')->count();
             $late    = $attendance->where('status', 'late')->count();
             $absent  = $attendance->where('status', 'absent')->count();
@@ -62,6 +75,14 @@ class BarangayProgressController extends Controller
             $counted = $present + $late + $absent;
             $rate    = $counted > 0 ? round(($present + $late) / $counted * 100, 1) : null;
 
+            // Assessments (average of score / max score) and latest conduct rating
+            $scored        = $assessments->filter(fn ($a) => $a->max_score > 0);
+            $assessmentAvg = $scored->isEmpty()
+                  ? null
+                  : round($scored->avg(fn ($a) => $a->score / $a->max_score * 100), 1);
+            $latestConduct = $conduct->sortBy([['recorded_on', 'desc'], ['id', 'desc']])->first();
+
+            // Training day
             $start       = $startedOn ? Carbon::parse($startedOn)->startOfDay() : null;
             $expectedEnd = $referral->expected_end_date ? Carbon::parse($referral->expected_end_date)->startOfDay() : null;
 
@@ -71,6 +92,7 @@ class BarangayProgressController extends Controller
             $stamps       = collect([$referral->updated_at, $lastNoteAt, $attendance->max('updated_at')])->filter();
             $lastActivity = $stamps->isEmpty() ? null : $stamps->max();
 
+            // Alerts (same rules as Maxima's Progress Monitoring)
             $alerts = [];
             if ($referral->status === 'Training Started') {
                   if ($rate !== null && $counted >= 3 && $rate < self::MIN_ATTENDANCE) {
@@ -92,20 +114,29 @@ class BarangayProgressController extends Controller
                   if ($pending > 0) {
                         $alerts[] = $pending . ' pending ' . ($pending === 1 ? 'concern' : 'concerns');
                   }
+                  if ($assessmentAvg !== null && $scored->count() >= 2 && $assessmentAvg < self::MIN_ASSESSMENT) {
+                        $alerts[] = "Low assessment average ({$assessmentAvg}%)";
+                  }
+                  if ($latestConduct?->rating === 'needs_improvement') {
+                        $alerts[] = 'Conduct needs improvement';
+                  }
             }
 
             return [
-                  'present'         => $present,
-                  'late'            => $late,
-                  'absent'          => $absent,
-                  'excused'         => $excused,
-                  'attendance_days' => $attendance->count(),
-                  'attendance_rate' => $rate,
-                  'training_day'    => $trainingDay,
-                  'training_length' => $trainingLength,
-                  'last_activity'   => $lastActivity,
-                  'alerts'          => $alerts,
-                  'needs_attention' => count($alerts) > 0,
+                  'present'            => $present,
+                  'late'               => $late,
+                  'absent'             => $absent,
+                  'excused'            => $excused,
+                  'attendance_days'    => $attendance->count(),
+                  'attendance_rate'    => $rate,
+                  'assessment_average' => $assessmentAvg,
+                  'assessment_count'   => $assessments->count(),
+                  'conduct_rating'     => $latestConduct?->rating,
+                  'training_day'       => $trainingDay,
+                  'training_length'    => $trainingLength,
+                  'last_activity'      => $lastActivity,
+                  'alerts'             => $alerts,
+                  'needs_attention'    => count($alerts) > 0,
             ];
       }
 
@@ -130,23 +161,25 @@ class BarangayProgressController extends Controller
 
             $ids = $referrals->pluck('id');
 
-            $attendanceBy = AttendanceRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
-            $notesBy      = ReferralNote::whereIn('referral_id', $ids)
+            $attendanceBy  = AttendanceRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $assessmentsBy = TrainingAssessment::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $conductBy     = ConductRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+            $notesBy       = ReferralNote::whereIn('referral_id', $ids)
                   ->selectRaw('referral_id, MAX(created_at) as last_at')
                   ->groupBy('referral_id')
                   ->pluck('last_at', 'referral_id');
-            $concernsBy   = AbsenceConcern::whereIn('referral_id', $ids)
+            $concernsBy    = AbsenceConcern::whereIn('referral_id', $ids)
                   ->where('status', 'pending')
                   ->selectRaw('referral_id, COUNT(*) as total')
                   ->groupBy('referral_id')
                   ->pluck('total', 'referral_id');
-            $startLogsBy  = ReferralStatusLog::whereIn('referral_id', $ids)
+            $startLogsBy   = ReferralStatusLog::whereIn('referral_id', $ids)
                   ->where('status', 'Training Started')
                   ->orderBy('created_at')
                   ->get()
                   ->groupBy('referral_id');
 
-            $referrals->each(function (Referral $r) use ($attendanceBy, $notesBy, $concernsBy, $startLogsBy) {
+            $referrals->each(function (Referral $r) use ($attendanceBy, $assessmentsBy, $conductBy, $notesBy, $concernsBy, $startLogsBy) {
                   $startLog  = $startLogsBy->get($r->id, collect())->first();
                   $startedOn = $r->training_start_date ?: $startLog?->created_at?->toDateString();
                   $lastNote  = isset($notesBy[$r->id]) ? Carbon::parse($notesBy[$r->id]) : null;
@@ -157,7 +190,9 @@ class BarangayProgressController extends Controller
                         $startedOn,
                         $attendanceBy->get($r->id, collect()),
                         $lastNote,
-                        (int) ($concernsBy[$r->id] ?? 0)
+                        (int) ($concernsBy[$r->id] ?? 0),
+                        $assessmentsBy->get($r->id, collect()),
+                        $conductBy->get($r->id, collect())
                   );
             });
 
@@ -188,8 +223,14 @@ class BarangayProgressController extends Controller
             $referral = $this->enrolledQuery()->whereKey($referral->id)->firstOrFail();
 
             $attendance = AttendanceRecord::where('referral_id', $referral->id)->orderByDesc('attendance_date')->get();
-            $notes      = ReferralNote::with('user:id,name')->where('referral_id', $referral->id)->latest()->get();
-            $concerns   = AbsenceConcern::with(['submitter:id,name', 'reviewer:id,name'])
+
+            $assessments = TrainingAssessment::where('referral_id', $referral->id)
+                  ->orderByDesc('assessed_on')->orderByDesc('id')->get();
+            $conduct = ConductRecord::where('referral_id', $referral->id)
+                  ->orderByDesc('recorded_on')->orderByDesc('id')->get();
+
+            $notes    = ReferralNote::with('user:id,name')->where('referral_id', $referral->id)->latest()->get();
+            $concerns = AbsenceConcern::with(['submitter:id,name', 'reviewer:id,name'])
                   ->where('referral_id', $referral->id)->latest()->get();
 
             $logs  = ReferralStatusLog::where('referral_id', $referral->id)->orderBy('created_at')->get();
@@ -198,11 +239,13 @@ class BarangayProgressController extends Controller
             $startLog  = $logs->firstWhere('status', 'Training Started');
             $startedOn = $referral->training_start_date ?: $startLog?->created_at?->toDateString();
 
-            $referral->started_on = $startedOn;
-            $referral->attendance = $attendance;
-            $referral->notes      = $notes;
-            $referral->concerns   = $concerns;
-            $referral->history    = $logs->map(fn ($log) => [
+            $referral->started_on  = $startedOn;
+            $referral->attendance  = $attendance;
+            $referral->assessments = $assessments;
+            $referral->conduct     = $conduct;
+            $referral->notes       = $notes;
+            $referral->concerns    = $concerns;
+            $referral->history     = $logs->map(fn ($log) => [
                   'status'     => $log->status,
                   'remarks'    => $log->remarks,
                   'changed_by' => $names[$log->changed_by] ?? null,
@@ -213,7 +256,9 @@ class BarangayProgressController extends Controller
                   $startedOn,
                   $attendance,
                   $notes->max('created_at'),
-                  $concerns->where('status', 'pending')->count()
+                  $concerns->where('status', 'pending')->count(),
+                  $assessments,
+                  $conduct
             );
 
             return response()->json($referral);
