@@ -15,6 +15,8 @@ use App\Http\Controllers\Api\OsyProgressController;
 use App\Http\Controllers\Api\DefaultRequirementController;
 use App\Http\Controllers\Api\BarangayProgressController;
 use App\Http\Controllers\Api\OsyReferralController;
+use App\Http\Controllers\Api\BarangayReportController;
+
 
 
 
@@ -34,6 +36,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
    // OSY side: the logged-in OSY's own data
    Route::get('/osy/progress', [OsyProgressController::class, 'index']);
+      Route::post('/osy/progress/{referral}/absence-reasons', [OsyProgressController::class, 'submitAbsenceReason']);
    Route::get('/osy/recommendations', [OsyProfileController::class, 'myRecommendations']);
    Route::get('/osy/profile', [OsyProfileController::class, 'myProfile']);
    Route::put('/osy/profile', [OsyProfileController::class, 'updateMyProfile']);
@@ -73,13 +76,13 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::delete('/maxima/progress/notes/{note}', [MaximaProgressController::class, 'destroyNote']);
    Route::put('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'updateDocument']);
    Route::delete('/maxima/progress/documents/{document}', [MaximaProgressController::class, 'destroyDocument']);
-   Route::patch('/maxima/absence-concerns/{concern}', [MaximaProgressController::class, 'reviewConcern']);
    Route::post('/maxima/progress/{referral}/assessments', [MaximaProgressController::class, 'storeAssessment']);
    Route::delete('/maxima/progress/assessments/{assessment}', [MaximaProgressController::class, 'destroyAssessment']);
    Route::post('/maxima/progress/{referral}/conduct', [MaximaProgressController::class, 'storeConduct']);
    Route::delete('/maxima/progress/conduct/{conduct}', [MaximaProgressController::class, 'destroyConduct']);
    Route::post('/maxima/progress/{referral}/concerns', [MaximaProgressController::class, 'storeConcern']);
-
+   Route::delete('/maxima/progress/concerns/{concern}', [MaximaProgressController::class, 'destroyConcern']);
+   Route::get('/barangay/reports', [BarangayReportController::class, 'index']);
 
    Route::get('/notifications', [NotificationController::class, 'index']);
    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
@@ -93,4 +96,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
    Route::get('/barangay/training-monitoring', [BarangayProgressController::class, 'index']);
    Route::get('/barangay/training-monitoring/{referral}', [BarangayProgressController::class, 'show']);
+      Route::post('/barangay/training-monitoring/{referral}/request-reason', [BarangayProgressController::class, 'requestReason']);
+   Route::patch('/barangay/concerns/{concern}', [BarangayProgressController::class, 'reviewConcern']);
 });

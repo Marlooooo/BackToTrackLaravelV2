@@ -37,40 +37,71 @@
          $referrals = $referrals->where('status', 'Accepted by Maxima');
 
          if ($referrals->isEmpty()) {
-               return;
+            return;
          }
 
-         $defaults = DefaultRequirement::orderBy('id')->pluck('name');
+         $defaults = DefaultRequirement::orderBy('id')->pluck('name')->all();
 
-         if ($defaults->isEmpty()) {
-               return;
-         }
+         $programs = TrainingProgram::whereIn(
+            'id',
+            $referrals->pluck('training_program_id')->filter()->unique()
+         )->get()->keyBy('id');
 
          $existing = static::whereIn('referral_id', $referrals->pluck('id'))
-               ->get(['referral_id', 'name'])
-               ->groupBy('referral_id');
+            ->get(['referral_id', 'name'])
+            ->groupBy('referral_id');
 
          $now  = now();
          $rows = [];
 
          foreach ($referrals as $referral) {
-               $have = $existing->get($referral->id, collect())->pluck('name')->all();
+            $program = $programs->get($referral->training_program_id);
+            $names   = $program ? $program->requirementNames() : $defaults;
 
-               foreach ($defaults as $name) {
+            if (empty($names)) {
+                  continue;
+            }
+
+            $have = $existing->get($referral->id, collect())->pluck('name')->all();
+
+            foreach ($names as $name) {
                   if (!in_array($name, $have, true)) {
                      $rows[] = [
-                           'referral_id' => $referral->id,
-                           'name'        => $name,
-                           'status'      => 'pending',
-                           'created_at'  => $now,
-                           'updated_at'  => $now,
+                        'referral_id' => $referral->id,
+                        'name'        => $name,
+                        'status'      => 'pending',
+                        'created_at'  => $now,
+                        'updated_at'  => $now,
                      ];
                   }
-               }
+            }
          }
 
          if ($rows) {
-               static::insertOrIgnore($rows);
+            static::insertOrIgnore($rows);
          }
+      }
+
+      protected $appends = ['is_program_requirement'];
+
+      private static array $programExtrasCache = [];
+
+      // True when this row came from the program's own requirements,
+      // false for defaults and for items Maxima added by hand to one OSY.
+      public function getIsProgramRequirementAttribute(): bool
+      {
+         if (! isset(self::$programExtrasCache[$this->referral_id])) {
+            $program = $this->referral?->trainingProgram;
+
+            self::$programExtrasCache[$this->referral_id] = $program
+                  ? array_map('mb_strtolower', $program->extraRequirementNames())
+                  : [];
+         }
+
+         return in_array(
+            mb_strtolower($this->name),
+            self::$programExtrasCache[$this->referral_id],
+            true
+         );
       }
    }

@@ -458,21 +458,22 @@ class OsyProfileController extends Controller
     }
 
     // GET: the logged-in OSY's saved course recommendations
+    // GET: the logged-in OSY's saved course recommendations
     public function myRecommendations(Request $request)
     {
         $osy = $this->ownProfile($request);
 
         if (! $osy) {
-            return response()->json(['data' => []]);
+            return response()->json(['data' => [], 'suggestions' => []]);
         }
 
-        $rows = $osy->recommendations()
-            ->whereHas('trainingProgram', fn ($q) => $q->where('status', 'active'))
-            ->with('trainingProgram')
-            ->get();
+        $rows = $osy->recommendations()->with('trainingProgram')->get();
+
+        // Courses Maxima offers right now (this list is unchanged)
+        $offered = $rows->filter(fn ($r) => $r->trainingProgram?->status === 'active')->values();
 
         return response()->json([
-            'data' => $rows->map(fn ($r) => [
+            'data' => $offered->map(fn ($r) => [
                 'rank'             => $r->rank,
                 'id'               => $r->trainingProgram->id,
                 'title'            => $r->trainingProgram->name,
@@ -487,9 +488,46 @@ class OsyProfileController extends Controller
                 'based_on'         => $r->based_on,
                 'generated_at'     => $r->generated_at,
             ])->values(),
+
+            // All saved suggestions in rank order, including courses Maxima does not offer
+            'suggestions' => $rows->map(fn ($r) => $this->ownSuggestion($r))->values(),
         ]);
     }
 
+    /** One saved recommendation, shaped for the OSY. */
+    private function ownSuggestion($rec): array
+    {
+        $program = $rec->trainingProgram;
+        $offered = $program && $program->status === 'active';
+
+        // Only the OSY's own words (career, goals) are described back to them. Words from
+        // the SK official's private notes are never sent to the OSY.
+        $reason = $rec->relation === 'related'
+            ? 'Related to the career you want'
+            : match ($rec->based_on) {
+                'preferred_career' => 'Based on the career you want',
+                'expressed_goals'  => 'Based on your goals',
+                default            => 'Based on your interview with the SK official',
+            };
+
+        return [
+            'rank'        => $rec->rank,
+            'available'   => $offered,
+            'title'       => $offered ? $program->name : ($rec->course_name ?: 'Suggested course'),
+            'career_path' => $rec->career_path,
+            'reason'      => $reason,
+            'program'     => $offered ? [
+                'id'               => $program->id,
+                'name'             => $program->name,
+                'description'      => $program->description,
+                'image_url'        => $program->image_url,
+                'requirements'     => $program->requirements,
+                'schedule'         => $program->schedule,
+                'slots'            => $program->slots,
+                'tesda_accredited' => $program->tesda_accredited,
+            ] : null,
+        ];
+    }
     // GET: the logged-in OSY's profile
     public function myProfile(Request $request)
     {

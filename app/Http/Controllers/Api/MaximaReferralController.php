@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use App\Models\TrainingProgram;
 
 class MaximaReferralController extends Controller
 {
@@ -139,6 +140,14 @@ class MaximaReferralController extends Controller
 
             if (! in_array($data['status'], $allowed, true)) {
                 abort(422, "Cannot change from {$current->status} to {$data['status']}.");
+            }
+                        // Block acceptance when the program is already full
+            if ($data['status'] === 'Accepted by Maxima') {
+                $program = TrainingProgram::whereKey($current->training_program_id)->lockForUpdate()->first();
+
+                if ($program && $program->enrolled_count >= $program->slots) {
+                    abort(422, "No slots left in {$program->name}.");
+                }
             }
 
             $current->update([
