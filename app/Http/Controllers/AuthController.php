@@ -55,6 +55,7 @@ class AuthController extends Controller
             'role' => $user->role,
             'name' => $user->name,
             'token' => $token,
+            'must_change_password' => (bool) $user->must_change_password,
         ]);
     }
 
@@ -79,14 +80,26 @@ class AuthController extends Controller
     {
         $request->validate([
             'current_password' => ['required', 'current_password'],
-            'password' => ['required', 'string', 'max:72', 'confirmed', Password::min(8)->letters()->numbers()],
+            'password' => [
+                'required',
+                'string',
+                'max:72',
+                'confirmed',
+                'different:current_password',
+                Password::min(8)->letters()->numbers(),
+            ],
         ], [
             'current_password.current_password' => 'Your current password is incorrect.',
             'password.confirmed' => 'Passwords do not match.',
+            'password.different' => 'Your new password must be different from your current password.',
         ]);
 
         // The 'hashed' cast on User hashes this automatically
-        $request->user()->update(['password' => Hash::make($request->password)]);
+        // forceFill because must_change_password is not mass assignable
+        $request->user()->forceFill([
+            'password' => Hash::make($request->password),
+            'must_change_password' => false,
+        ])->save();
 
         return response()->json(['success' => true]);
     }
