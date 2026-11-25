@@ -186,7 +186,7 @@ class OsyProfileController extends Controller
             'email' => $account['email'],
             'password' => Hash::make($account['password']),
             'role' => self::OSY_ROLE,
-            'email_verified_at' => now(),
+            'email_verified_at' => config('email_verification.enabled') ? null : now(),
         ]);
     }
 

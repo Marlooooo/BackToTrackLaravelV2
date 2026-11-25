@@ -32,7 +32,7 @@
          [$title, $message] = match ($this->status) {
             'Accepted by Maxima' => [
                   'Referral accepted',
-                  "{$name}'s referral to {$program} was accepted by Maxima.",
+                  "{$name}'s referral to {$program} was accepted by Maxima. The OSY must submit the requirements listed below to Maxima.",
             ],
             'Rejected' => [
                   'Referral rejected',
@@ -57,11 +57,13 @@
          };
 
          return [
-            'type'        => 'training_status',
-            'title'       => $title,
-            'message'     => $message,
-            'referral_id' => $this->referral->id,
-            'status'      => $this->status,
+            'type'         => 'training_status',
+            'title'        => $title,
+            'message'      => $message,
+            'referral_id'  => $this->referral->id,
+            'status'       => $this->status,
+            'requirements' => $this->status === 'Accepted by Maxima' ? $this->referral->requirementNames() : [],
+            'requirements_deadline' => $this->status === 'Accepted by Maxima' ? $this->referral->requirementsDeadline() : null,
          ];
       }
    }

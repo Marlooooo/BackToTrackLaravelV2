@@ -119,9 +119,7 @@ class MaximaReferralController extends Controller
         ]);
     }
 
-    /**
-     * PATCH /api/maxima/referrals/{referral}/status
-     */
+
     public function updateStatus(Request $request, Referral $referral): JsonResponse
     {
         $this->authorizeMaxima($request);
@@ -132,8 +130,6 @@ class MaximaReferralController extends Controller
         ]);
 
         $referral = DB::transaction(function () use ($referral, $data, $request) {
-            // Lock the row and re-check its status, so two reviewers
-            // cannot both act on the same referral.
             $current = Referral::whereKey($referral->id)->lockForUpdate()->firstOrFail();
 
             $allowed = self::TRANSITIONS[$current->status] ?? [];
@@ -141,7 +137,7 @@ class MaximaReferralController extends Controller
             if (! in_array($data['status'], $allowed, true)) {
                 abort(422, "Cannot change from {$current->status} to {$data['status']}.");
             }
-                        // Block acceptance when the program is already full
+            
             if ($data['status'] === 'Accepted by Maxima') {
                 $program = TrainingProgram::whereKey($current->training_program_id)->lockForUpdate()->first();
 

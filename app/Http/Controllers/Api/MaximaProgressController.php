@@ -430,6 +430,74 @@ class MaximaProgressController extends Controller
     }
 
     // ------------------------------------------------------------------
+    // Completed trainings
+    // ------------------------------------------------------------------
+
+    /**
+     * GET /api/maxima/completed-trainings
+     */
+    public function completedTrainings(Request $request)
+    {
+        $this->authorizeMaxima($request);
+
+        $referrals = Referral::with(['osyProfile', 'trainingProgram', 'referrer:id,name'])
+            ->where('status', 'Completed')
+            ->get();
+
+        $ids = $referrals->pluck('id');
+
+        $attendanceBy  = AttendanceRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+        $assessmentsBy = TrainingAssessment::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+        $conductBy     = ConductRecord::whereIn('referral_id', $ids)->get()->groupBy('referral_id');
+        $logsBy        = ReferralStatusLog::whereIn('referral_id', $ids)
+            ->whereIn('status', ['Training Started', 'Completed'])
+            ->orderBy('created_at')
+            ->get()
+            ->groupBy('referral_id');
+
+        $referrals->each(function (Referral $referral) use ($attendanceBy, $assessmentsBy, $conductBy, $logsBy) {
+            $logs     = $logsBy->get($referral->id, collect());
+            $startLog = $logs->firstWhere('status', 'Training Started');
+            $doneLog  = $logs->where('status', 'Completed')->last();
+
+            $startedOn   = $referral->training_start_date ?: $startLog?->created_at?->toDateString();
+            $completedOn = $referral->training_end_date ?: $doneLog?->created_at?->toDateString();
+
+            $referral->started_on   = $startedOn;
+            $referral->completed_on = $completedOn;
+            $referral->summary      = $this->buildSummary(
+                $referral,
+                $startedOn,
+                $attendanceBy->get($referral->id, collect()),
+                collect(),
+                $assessmentsBy->get($referral->id, collect()),
+                $conductBy->get($referral->id, collect()),
+                null
+            );
+        });
+
+        $referrals = $referrals->sortByDesc('completed_on')->values();
+
+        $rates  = $referrals->map(fn ($r) => $r->summary['attendance_rate'])->filter(fn ($v) => $v !== null);
+        $scores = $referrals->map(fn ($r) => $r->summary['assessment_average'])->filter(fn ($v) => $v !== null);
+
+        $stats = [
+            'total'              => $referrals->count(),
+            'this_month'         => $referrals->filter(
+                fn ($r) => $r->completed_on && Carbon::parse($r->completed_on)->isCurrentMonth()
+            )->count(),
+            'average_attendance' => $rates->isEmpty() ? null : round($rates->avg(), 1),
+            'average_assessment' => $scores->isEmpty() ? null : round($scores->avg(), 1),
+            'employed'           => $referrals->whereIn('after_training_status', ['employed', 'self_employed'])->count(),
+        ];
+
+        return response()->json([
+            'stats'     => $stats,
+            'trainings' => $referrals,
+        ]);
+    }
+
+    // ------------------------------------------------------------------
     // Training details + status changes
     // ------------------------------------------------------------------
 
@@ -629,10 +697,37 @@ class MaximaProgressController extends Controller
         $this->assertCanRecord($referral, 'attendance');
 
         $data = $request->validate([
-            'attendance_date' => 'required|date',
+            'attendance_date' => 'required|date|before_or_equal:today',
             'status'          => 'required|in:present,late,absent,excused',
             'remarks'         => 'nullable|string|max:255',
         ]);
+
+        $date = Carbon::parse($data['attendance_date'])->toDateString();
+
+        $startLog = ReferralStatusLog::where('referral_id', $referral->id)
+            ->where('status', 'Training Started')
+            ->orderBy('created_at')
+            ->first();
+
+        $start = $referral->training_start_date
+            ? Carbon::parse($referral->training_start_date)->toDateString()
+            : $startLog?->created_at?->toDateString();
+
+        abort_if(
+            $start && $date < $start,
+            422,
+            'Attendance cannot be recorded before the training start date (' . Carbon::parse($start)->format('M j, Y') . ').'
+        );
+
+        if (in_array($referral->status, ['Completed', 'Dropped'], true) && $referral->training_end_date) {
+            $end = Carbon::parse($referral->training_end_date)->toDateString();
+
+            abort_if(
+                $date > $end,
+                422,
+                'Attendance cannot be recorded after the training ended (' . Carbon::parse($end)->format('M j, Y') . ').'
+            );
+        }
 
         AttendanceRecord::updateOrCreate(
             ['referral_id' => $referral->id, 'attendance_date' => $data['attendance_date']],

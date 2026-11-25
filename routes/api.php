@@ -21,12 +21,13 @@ use App\Http\Controllers\Api\BarangayDashboardController;
 use App\Http\Controllers\Api\OsyAccountController;
 
 
+
 /*
 |--------------------------------------------------------------------------
 | Public routes
 |--------------------------------------------------------------------------
 */
-Route::post('/contact', [ContactController::class, 'send'])->middleware('throttle:2,120');
+Route::post('/contact', [ContactController::class, 'send'])->middleware('throttle:5,60');
 Route::post('/login', [AuthController::class, 'login']);
 
 /*
@@ -39,11 +40,14 @@ Route::middleware('auth:sanctum')->group(function () {
    // Auth
    Route::post('/logout', [AuthController::class, 'logout']);
    Route::get('/user', [AuthController::class, 'user']);
+   
+      // Email verification (OSY accounts, first login)
+   Route::post('/email/verification/send', [AuthController::class, 'sendEmailCode'])->middleware('throttle:10,10');
+   Route::post('/email/verification/verify', [AuthController::class, 'verifyEmailCode'])->middleware('throttle:20,10');
 
-   // SK registers OSY accounts (make sure register() checks the role is SK)
-   Route::post('/register', [AuthController::class, 'register']);
 
    // Shared resources
+   Route::get('/training-programs/{trainingProgram}/history', [TrainingProgramController::class, 'history']);
    Route::apiResource('training-programs', TrainingProgramController::class);
    Route::apiResource('osy-profiles', OsyProfileController::class);
    Route::post('/osy-profiles/{osyProfile}/reset-password', [OsyAccountController::class, 'resetPassword'])->middleware('throttle:10,1');
@@ -76,6 +80,8 @@ Route::middleware('auth:sanctum')->group(function () {
    Route::prefix('maxima')->group(function () {
       Route::get('/dashboard', [MaximaDashboardController::class, 'index']);
       Route::get('/reports', [MaximaReportController::class, 'index']);
+      Route::get('/completed-trainings', [MaximaProgressController::class, 'completedTrainings']);
+      Route::get('/program-history', [TrainingProgramController::class, 'allHistory']);
 
       // Referrals & enrollees
       Route::get('/referrals', [MaximaReferralController::class, 'index']);

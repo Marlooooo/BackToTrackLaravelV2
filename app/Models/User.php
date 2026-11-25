@@ -37,6 +37,10 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'email_verification_code',
+        'email_verification_expires_at',
+        'email_verification_attempts',
+        'email_verification_sent_at',
     ];
 
     /**
@@ -50,6 +54,19 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'must_change_password' => 'boolean',
+            'email_verification_expires_at' => 'datetime',
+            'email_verification_sent_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Only OSY accounts are checked, and only while the switch in
+     * config/email_verification.php is on. SK and Maxima accounts are never blocked.
+     */
+    public function needsEmailVerification(): bool
+    {
+        return config('email_verification.enabled')
+            && $this->role === 'osy'
+            && $this->email_verified_at === null;
     }
 }

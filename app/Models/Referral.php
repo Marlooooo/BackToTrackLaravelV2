@@ -72,6 +72,37 @@
       {
          return $this->hasMany(ReferralDocument::class);
       }
+      public function requirementNames(): array
+      {
+         $names = $this->referralDocuments()
+            ->where('status', '!=', 'not_applicable')
+            ->orderBy('id')
+            ->pluck('name');
+
+         if ($names->isEmpty()) {
+            $this->loadMissing('trainingProgram');
+
+            $names = collect(
+               $this->trainingProgram?->requirementNames()
+               ?? DefaultRequirement::orderBy('id')->pluck('name')->all()
+            );
+         }
+
+         return $names->values()->all();
+      }
+      public const REQUIREMENTS_DEADLINE_DAYS = 7;
+
+      public function requirementsDeadline(): string
+      {
+         $acceptedAt = $this->statusLogs()
+            ->where('status', 'Accepted by Maxima')
+            ->latest('id')
+            ->value('created_at');
+
+         return \Illuminate\Support\Carbon::parse($acceptedAt ?? now())
+            ->addDays(self::REQUIREMENTS_DEADLINE_DAYS)
+            ->toDateString();
+      }
 
       public function absenceConcerns(): HasMany
       {
